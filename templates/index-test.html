@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Simple Test Template</title>
+  <style>
+    :root {
+      --bg: #f7f7fb;
+      --fg: #1f2937;
+      --muted: #6b7280;
+      --card: #ffffff;
+      --accent: #2563eb;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto 
+ Sans', ' Apple Color Emoji', ' Segoe UI Emoji', ' Segoe UI Symbol'; background: var(--bg); color: var(--fg); }
+ a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+
+      .container {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 1rem;
+      }
+
+      header {
+        background: var(--card);
+        border-bottom: 1px solid #e5e7eb;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: .5rem;
+        font-weight: 700;
+      }
+
+      .brand-logo {
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        background: var(--accent);
+        display: inline-block;
+      }
+
+      nav {
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: repeat(12, 1fr);
+        gap: 1rem;
+      }
+
+      .col-12 {
+        grid-column: span 12;
+      }
+
+      .col-6 {
+        grid-column: span 6;
+      }
+
+      .col-4 {
+        grid-column: span 4;
+      }
+
+      @media (max-width: 900px) {
+
+        .col-6,
+        .col-4 {
+          grid-column: span 12;
+        }
+      }
+
+      .card {
+        background: var(--card);
+        border: 1px solid #e5e7eb;
+        border-radius: 16px;
+        padding: 1rem;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, .03);
+      }
+
+      .btn {
+        display: inline-block;
+        border: 1px solid transparent;
+        padding: .6rem 1rem;
+        border-radius: 12px;
+        font-weight: 600;
+        cursor:
+          pointer;
+        background: var(--accent);
+        color: white;
+      }
+
+      .btn.ghost {
+        background: transparent;
+        color: var(--fg);
+        border-color: #d1d5db;
+      }
+
+      footer {
+        color: var(--muted);
+        font-size: .9rem;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: 1.2fr .8fr;
+        gap: 1rem;
+        align-items: center;
+      }
+
+      @media (max-width: 900px) {
+        .hero {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .badge {
+        display: inline-block;
+        padding: .25rem .5rem;
+        border-radius: 999px;
+        background: #e0e7ff;
+        color: #1e3a8a;
+        font-weight:
+          600;
+        font-size: .8rem;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .spacer {
+        height: 24px;
+      }
+
+      .switch {
+        margin-left: auto;
+      }
+
+      /* Dark mode */
+      .dark {
+        --bg: #0b1220;
+        --fg: #e5e7eb;
+        --muted: #9ca3af;
+        --card: #0f172a;
+        --accent: #38bdf8;
+      }
+
+      .dark header {
+        border-bottom-color: #0b1220;
+      }
+
+      .dark .card {
+        border-color: #0b1220;
+        box-shadow: none;
+      }
+  </style>
+</head>
+
+<body>
+  <header>
+    <div class="container row" style="align-items:center;">
+      <div class="brand col-6 col-12">
+        <span class="brand-logo" aria-hidden="true"></span>
+        <span>My Test App</span>
+        <span class="badge">v0.1</span>
+      </div>
+      <nav class="col-6 col-12" style="justify-content:flex-end;">
+        <a href="#">Home</a>
+        <a href="#">Docs</a>
+        <a href="#">About</a>
+        <button id="themeToggle" class="btn ghost switch" type="button">Toggle Theme</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="spacer"></div>
+    <section class="hero">
+      <div class="card">
+        <h1 style="margin:0 0 .5rem 0;">Simple HTML Template</h1>
+        <p class="muted">Use this as a starting point for quick tests and prototypes. No build tools or CDNs needed.</p>
+        <div style="display:flex; gap:.5rem; margin-top:1rem;">
+          <button class="btn" type="button" id="ctaBtn">Primary Action</button>
+          <button class="btn ghost" type="button" id="logBtn">Console Log</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2 style="margin-top:0;">Quick Facts</h2>
+        <ul class="muted">
+          <li>Responsive grid (12-col).</li>
+          <li>Cards, buttons, badge components.</li>
+          <li>Built-in light/dark theme toggle.</li>
+        </ul>
+      </div>
+    </section>
+
+    <div class="spacer"></div>
+
+    <section class="row">
+      <div class="col-4">
+        <div class="card">
+          <h3>Card One</h3>
+          <p class="muted">Put any content here.</p>
+        </div>
+      </div>
+      <div class="col-4">
+        <div class="card">
+          <h3>Card Two</h3>
+          <p class="muted">Useful for layout testing.</p>
+        </div>
+      </div>
+      <div class="col-4">
+        <div class="card">
+          <h3>Card Three</h3>
+          <p class="muted">Add or remove as needed.</p>
+        </div>
+      </div>
+    </section>
+
+    <div class="spacer"></div>
+  </main>
+
+  <footer class="container" style="padding-bottom:2rem;">
+    <div class="card" style="display:flex; align-items:center; gap: .75rem;">
+      <span class="muted">© <span id="year"></span> • Ready to hack.</span>
+      <a class="muted" href="#">Privacy</a>
+      <a class="muted" href="#">Terms</a>
+    </div>
+  </footer>
+
+  <script>
+    // Simple helpers
+    const $ = (sel) => document.querySelector(sel);
+
+    // Year stamp
+    $('#year').textContent = new Date().getFullYear();
+
+    // Console test button
+    $('#logBtn').addEventListener('click', () => {
+      console.log('[Test] Button clicked at', new Date().toISOString());
+      alert('Check the browser console!');
+    });
+
+    // Fake CTA
+    $('#ctaBtn').addEventListener('click', () => {
+      const el = document.createElement('div');
+      el.className = 'card';
+      el.innerHTML = '<strong>Nice!</strong> You can dynamically add content.';
+      document.querySelector('main').appendChild(el);
+    });
+
+    // Theme toggle
+    const toggle = $('#themeToggle');
+    const applyTheme = (mode) => {
+      document.documentElement.classList.toggle('dark', mode === 'dark');
+      localStorage.setItem('theme', mode);
+      toggle.textContent = mode === 'dark' ? 'Light Mode' : 'Dark Mode';
+    };
+
+    const saved = localStorage.getItem('theme');
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    applyTheme(saved || (prefersDark ? 'dark' : 'light'));
+
+    toggle.addEventListener('click', () => {
+      const isDark = document.documentElement.classList.contains('dark');
+      applyTheme(isDark ? 'light' : 'dark');
+    });
+  </script>
+</body>
+
+</html>
