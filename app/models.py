@@ -195,3 +195,44 @@ class Enrollment(models.Model):
 
     def __str__(self):
         return f"{self.student.name} enrolled in {self.course.title} ({self.status})"
+
+class Coupon(models.Model):
+    """Model to store discount coupon codes"""
+    code = models.CharField(max_length=50, unique=True, help_text="Coupon code (e.g., CD09012)")
+    discount_percentage = models.DecimalField(max_digits=5, decimal_places=2, help_text="Discount percentage (e.g., 10.00)")
+    is_active = models.BooleanField(default=True, help_text="Whether this coupon is currently active")
+    max_uses = models.IntegerField(null=True, blank=True, help_text="Maximum number of times this coupon can be used (optional)")
+    uses_count = models.IntegerField(default=0, help_text="Number of times this coupon has been used")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.code} - {self.discount_percentage}%"
+
+class CheckoutSession(models.Model):
+    """Model to securely hold checkout data until payment succeeds"""
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+    ]
+    PAYMENT_PROVIDER_CHOICES = [
+        ('stripe', 'Stripe'),
+        ('paypal', 'PayPal'),
+    ]
+
+    session_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    name = models.CharField(max_length=200)
+    email = models.EmailField()
+    phone = models.CharField(max_length=20, blank=True, null=True)
+    course = models.ForeignKey(Course, on_delete=models.SET_NULL, null=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    payment_provider = models.CharField(max_length=20, choices=PAYMENT_PROVIDER_CHOICES)
+    payment_id = models.CharField(max_length=255, unique=True)
+    magic_link_token = models.UUIDField(default=uuid.uuid4, editable=False)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.email} - {self.payment_provider} - {self.status}"

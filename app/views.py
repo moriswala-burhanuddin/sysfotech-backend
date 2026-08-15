@@ -13,9 +13,173 @@ from rest_framework.views import APIView
 from django.core.mail import EmailMultiAlternatives
 from django.utils.html import strip_tags
 import os
+import io
 from django.conf import settings
 import stripe
-from .models import Course, Student, Transaction, Enrollment
+from .models import Course, Student, Transaction, Enrollment, Coupon, CheckoutSession
+
+# ─── PDF Invoice Generator ──────────────────────────────────────────
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.lib.colors import HexColor
+from reportlab.pdfgen import canvas as pdf_canvas
+from reportlab.lib.styles import getSampleStyleSheet
+from django.core.mail import EmailMessage
+
+
+def generate_invoice_pdf(enrollment):
+    """Generate a professional PDF invoice for a given enrollment. Returns bytes."""
+    buf = io.BytesIO()
+    c = pdf_canvas.Canvas(buf, pagesize=A4)
+    width, height = A4
+
+    # ── Colors ──
+    brand_orange = HexColor('#F97316')
+    dark = HexColor('#1E293B')
+    muted = HexColor('#64748B')
+    light_bg = HexColor('#F8FAFC')
+    green = HexColor('#16A34A')
+    border_color = HexColor('#E2E8F0')
+
+    # ── Background strip at top ──
+    c.setFillColor(dark)
+    c.rect(0, height - 100, width, 100, fill=True, stroke=False)
+
+    # ── Company name in header ──
+    c.setFillColor(HexColor('#FFFFFF'))
+    c.setFont('Helvetica-Bold', 22)
+    c.drawString(40, height - 50, 'Sysfotech IT Services')
+    c.setFont('Helvetica', 9)
+    c.setFillColor(HexColor('#94A3B8'))
+    c.drawString(40, height - 68, '124 City Road, London, EC1V 2NX, United Kingdom')
+    c.drawString(40, height - 80, 'billing@sysfotech.uk  |  +44 74421 93577')
+
+    # ── INVOICE label ──
+    c.setFillColor(brand_orange)
+    c.setFont('Helvetica-Bold', 28)
+    c.drawRightString(width - 40, height - 50, 'INVOICE')
+    c.setFillColor(HexColor('#94A3B8'))
+    c.setFont('Helvetica', 10)
+    inv_number = f'INV-{enrollment.id:05d}'
+    c.drawRightString(width - 40, height - 68, inv_number)
+
+    # ── Status badge ──
+    if enrollment.status == 'paid':
+        c.setFillColor(green)
+        c.roundRect(width - 100, height - 90, 60, 18, 4, fill=True, stroke=False)
+        c.setFillColor(HexColor('#FFFFFF'))
+        c.setFont('Helvetica-Bold', 9)
+        c.drawCentredString(width - 70, height - 85, 'PAID')
+
+    y = height - 140
+
+    # ── Billed To / Invoice Details ──
+    c.setFillColor(muted)
+    c.setFont('Helvetica-Bold', 8)
+    c.drawString(40, y, 'BILLED TO')
+    c.drawString(300, y, 'INVOICE DETAILS')
+
+    y -= 18
+    c.setFillColor(dark)
+    c.setFont('Helvetica-Bold', 12)
+    c.drawString(40, y, enrollment.student.name)
+    c.setFont('Helvetica', 10)
+    c.setFillColor(muted)
+
+    c.setFont('Helvetica', 10)
+    c.drawString(300, y, f'Date: {enrollment.created_at.strftime("%d %b %Y")}')
+    y -= 16
+    c.drawString(40, y, enrollment.student.email)
+    c.drawString(300, y, f'Payment ID: {enrollment.payment_id[:20]}...' if len(enrollment.payment_id) > 20 else f'Payment ID: {enrollment.payment_id}')
+    y -= 16
+    if enrollment.student.phone_number:
+        c.drawString(40, y, f'Phone: {enrollment.student.phone_number}')
+    c.drawString(300, y, f'Provider: {enrollment.payment_provider.title()}')
+
+    y -= 40
+
+    # ── Table Header ──
+    c.setFillColor(light_bg)
+    c.rect(30, y - 5, width - 60, 22, fill=True, stroke=False)
+    c.setStrokeColor(border_color)
+    c.line(30, y - 5, width - 30, y - 5)
+
+    c.setFillColor(dark)
+    c.setFont('Helvetica-Bold', 9)
+    c.drawString(40, y + 2, 'DESCRIPTION')
+    c.drawString(340, y + 2, 'QTY')
+    c.drawString(400, y + 2, 'UNIT PRICE')
+    c.drawRightString(width - 40, y + 2, 'TOTAL')
+
+    y -= 30
+
+    # ── Table Row ──
+    c.setFillColor(dark)
+    c.setFont('Helvetica', 10)
+    c.drawString(40, y, enrollment.course.title)
+    c.drawString(350, y, '1')
+    c.drawString(400, y, f'£{enrollment.amount:.2f}')
+    c.drawRightString(width - 40, y, f'£{enrollment.amount:.2f}')
+
+    c.setStrokeColor(border_color)
+    c.line(30, y - 12, width - 30, y - 12)
+
+    y -= 50
+
+    # ── Totals ──
+    c.setFillColor(muted)
+    c.setFont('Helvetica', 10)
+    c.drawString(380, y, 'Subtotal')
+    c.setFillColor(dark)
+    c.drawRightString(width - 40, y, f'£{enrollment.amount:.2f}')
+    y -= 18
+    c.setFillColor(muted)
+    c.drawString(380, y, 'VAT (0%)')
+    c.setFillColor(dark)
+    c.drawRightString(width - 40, y, '£0.00')
+
+    y -= 5
+    c.setStrokeColor(border_color)
+    c.line(370, y, width - 30, y)
+    y -= 20
+
+    c.setFillColor(dark)
+    c.setFont('Helvetica-Bold', 14)
+    c.drawString(380, y, 'Total')
+    c.drawRightString(width - 40, y, f'£{enrollment.amount:.2f}')
+
+    # ── Footer ──
+    c.setFillColor(muted)
+    c.setFont('Helvetica', 8)
+    c.drawCentredString(width / 2, 50, 'Thank you for your purchase! If you have questions, contact billing@sysfotech.uk')
+    c.drawCentredString(width / 2, 38, f'© {enrollment.created_at.year} Sysfotech IT Services. All rights reserved.')
+
+    c.save()
+    buf.seek(0)
+    return buf.read()
+
+
+def send_invoice_email(enrollment):
+    """Generate PDF invoice and send it as an email attachment."""
+    pdf_bytes = generate_invoice_pdf(enrollment)
+    inv_number = f'INV-{enrollment.id:05d}'
+    from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
+    magic_link_url = f'http://localhost:8080/verify?token={enrollment.student.magic_link_token}'
+
+    email = EmailMessage(
+        subject=f'Your Invoice {inv_number} - Sysfotech',
+        body=(
+            f'Hello {enrollment.student.name},\n\n'
+            f'Thank you for enrolling in {enrollment.course.title}!\n\n'
+            f'Your invoice {inv_number} is attached as a PDF.\n\n'
+            f'Access your student dashboard here:\n{magic_link_url}\n\n'
+            f'Best regards,\nSysfotech IT Services'
+        ),
+        from_email=from_email,
+        to=[enrollment.student.email],
+    )
+    email.attach(f'{inv_number}.pdf', pdf_bytes, 'application/pdf')
+    email.send(fail_silently=False)
 
 # Create your views here.
 
@@ -304,6 +468,26 @@ Consent Approved: {'Yes' if data['consent'] else 'No'}
             'message': 'Course registration submitted successfully! Admissions will contact you soon.'
         }, status=status.HTTP_201_CREATED)
 
+class CouponValidateView(APIView):
+    permission_classes = []
+
+    def post(self, request):
+        code = request.data.get('code')
+        if not code:
+            return Response({'error': 'Coupon code is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        coupon = Coupon.objects.filter(code=code, is_active=True).first()
+        if not coupon:
+            return Response({'error': 'Invalid or inactive coupon code'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if coupon.max_uses is not None and coupon.uses_count >= coupon.max_uses:
+            return Response({'error': 'Coupon usage limit has been reached'}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            'discount_percentage': coupon.discount_percentage,
+            'message': 'Coupon applied successfully'
+        })
+
 class CreateStripePaymentIntentView(APIView):
     permission_classes = [] # Public access for guest checkout
 
@@ -317,6 +501,7 @@ class CreateStripePaymentIntentView(APIView):
             phone = data.get('phone')
             course_slug = data.get('course_slug')
             course_title = data.get('course_title', 'Mock Course')
+            coupon_code = data.get('coupon_code')
             
             # Fetch course to get real price (to prevent tampering)
             course = Course.objects.filter(slug=course_slug).first()
@@ -330,30 +515,54 @@ class CreateStripePaymentIntentView(APIView):
             else:
                 price = float(course.price)
                 
+            if coupon_code:
+                coupon = Coupon.objects.filter(code=coupon_code, is_active=True).first()
+                if coupon and (coupon.max_uses is None or coupon.uses_count < coupon.max_uses):
+                    discount = float(price) * (float(coupon.discount_percentage) / 100.0)
+                    price = float(price) - discount
+                    # Increment use count for simplicity
+                    coupon.uses_count += 1
+                    coupon.save()
+
             amount = int(price * 100) # Stripe expects cents
 
-            # Create or get student (smart guest checkout)
-            student, created = Student.objects.get_or_create(
-                email=email,
-                defaults={'name': name, 'phone_number': phone}
-            )
+            # Auth token check
+            token = request.headers.get('Authorization')
+            student = None
+            if token:
+                token = token.replace('Bearer ', '')
+                student = Student.objects.filter(magic_link_token=token).first()
             
-            # If student exists but phone is missing, update it
-            if not created and phone and not student.phone_number:
-                student.phone_number = phone
-                student.save()
+            # Check for existing student and reject if not authenticated as them
+            existing_student = Student.objects.filter(email=email).first()
+            if existing_student:
+                if not student or student.email != email:
+                    return Response(
+                        {'error': 'This email is already registered. Please use a different email or access your existing courses from the Access Courses page.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                student = existing_student
+                
+                # Check if already enrolled in this course
+                if Enrollment.objects.filter(student=student, course=course, status='paid').exists():
+                    return Response(
+                        {'error': 'You are already enrolled in this course.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
 
             # Create PaymentIntent
             intent = stripe.PaymentIntent.create(
                 amount=amount,
-                currency='usd',
+                currency='gbp',
                 payment_method_types=['card'],
                 metadata={'student_email': email, 'course_slug': course_slug}
             )
             
-            # Create enrollment record as pending
-            Enrollment.objects.create(
-                student=student,
+            # Create CheckoutSession
+            session = CheckoutSession.objects.create(
+                name=name,
+                email=email,
+                phone=phone,
                 course=course,
                 amount=price,
                 payment_provider='stripe',
@@ -361,10 +570,13 @@ class CreateStripePaymentIntentView(APIView):
                 status='pending'
             )
 
+            # If user already logged in, they can keep using their existing token
+            magic_link_token = str(student.magic_link_token) if student else str(session.magic_link_token)
+
             return Response({
                 'clientSecret': intent.client_secret,
                 'paymentIntentId': intent.id,
-                'magicLinkToken': str(student.magic_link_token) # For testing purposes only to show in walkthrough
+                'magicLinkToken': magic_link_token
             })
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -380,6 +592,7 @@ class CreatePayPalOrderView(APIView):
             phone = data.get('phone')
             course_slug = data.get('course_slug')
             course_title = data.get('course_title', 'Mock Course')
+            coupon_code = data.get('coupon_code')
             
             course = Course.objects.filter(slug=course_slug).first()
             if not course:
@@ -391,24 +604,47 @@ class CreatePayPalOrderView(APIView):
             else:
                 price = float(course.price)
 
-            # Create or get student
-            student, created = Student.objects.get_or_create(
-                email=email,
-                defaults={'name': name, 'phone_number': phone}
-            )
+            if coupon_code:
+                coupon = Coupon.objects.filter(code=coupon_code, is_active=True).first()
+                if coupon and (coupon.max_uses is None or coupon.uses_count < coupon.max_uses):
+                    discount = float(price) * (float(coupon.discount_percentage) / 100.0)
+                    price = float(price) - discount
+                    # Increment use count for simplicity
+                    coupon.uses_count += 1
+                    coupon.save()
+
+            # Auth token check
+            token = request.headers.get('Authorization')
+            student = None
+            if token:
+                token = token.replace('Bearer ', '')
+                student = Student.objects.filter(magic_link_token=token).first()
             
-            # If student exists but phone is missing, update it
-            if not created and phone and not student.phone_number:
-                student.phone_number = phone
-                student.save()
+            # Check for existing student and reject if not authenticated as them
+            existing_student = Student.objects.filter(email=email).first()
+            if existing_student:
+                if not student or student.email != email:
+                    return Response(
+                        {'error': 'This email is already registered. Please use a different email or access your existing courses from the Access Courses page.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                student = existing_student
+                
+                # Check if already enrolled in this course
+                if Enrollment.objects.filter(student=student, course=course, status='paid').exists():
+                    return Response(
+                        {'error': 'You are already enrolled in this course.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
             
-            # Since this is a simple mock endpoint without real PayPal SDK on backend:
             # Generate a fake order ID for demonstration
             import uuid
             fake_order_id = f"PAYPAL_ORDER_{uuid.uuid4().hex[:8]}"
             
-            Enrollment.objects.create(
-                student=student,
+            session = CheckoutSession.objects.create(
+                name=name,
+                email=email,
+                phone=phone,
                 course=course,
                 amount=price,
                 payment_provider='paypal',
@@ -416,15 +652,16 @@ class CreatePayPalOrderView(APIView):
                 status='pending'
             )
 
+            magic_link_token = str(student.magic_link_token) if student else str(session.magic_link_token)
+
             return Response({
                 'orderID': fake_order_id,
-                'magicLinkToken': str(student.magic_link_token)
+                'magicLinkToken': magic_link_token
             })
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 import json
-from django.core.mail import send_mail
 
 class StripeWebhookView(APIView):
     permission_classes = []
@@ -442,20 +679,34 @@ class StripeWebhookView(APIView):
             payment_intent = event.data.object
             payment_id = payment_intent.id
             
-            enrollment = Enrollment.objects.filter(payment_id=payment_id).first()
-            if enrollment:
-                enrollment.status = 'paid'
-                enrollment.save()
+            session = CheckoutSession.objects.filter(payment_id=payment_id).first()
+            if session and session.status != 'completed':
+                session.status = 'completed'
+                session.save()
                 
-                # Send email
-                from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
-                send_mail(
-                    subject='Welcome to your Course! - Sysfotech',
-                    message=f'Hello {enrollment.student.name},\n\nYou have successfully enrolled in {enrollment.course.title}.\n\nAccess your student dashboard here:\nhttp://localhost:8080/dashboard?token={enrollment.student.magic_link_token}\n\nThank you for choosing Sysfotech!',
-                    from_email=from_email,
-                    recipient_list=[enrollment.student.email],
-                    fail_silently=False,
+                student = Student.objects.filter(email=session.email).first()
+                if not student:
+                    student = Student.objects.create(
+                        name=session.name,
+                        email=session.email,
+                        phone_number=session.phone,
+                        magic_link_token=session.magic_link_token
+                    )
+                
+                enrollment = Enrollment.objects.create(
+                    student=student,
+                    course=session.course,
+                    amount=session.amount,
+                    payment_provider='stripe',
+                    payment_id=payment_id,
+                    status='paid'
                 )
+                
+                # Send PDF invoice email
+                try:
+                    send_invoice_email(enrollment)
+                except Exception as e:
+                    print(f'Error sending invoice email: {e}')
 
         return HttpResponse(status=200)
 
@@ -464,19 +715,34 @@ class PayPalCaptureView(APIView):
 
     def post(self, request):
         order_id = request.data.get('orderID')
-        enrollment = Enrollment.objects.filter(payment_id=order_id).first()
-        if enrollment:
-            enrollment.status = 'paid'
-            enrollment.save()
-            
-            from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
-            send_mail(
-                subject='Welcome to your Course! - Sysfotech',
-                message=f'Hello {enrollment.student.name},\n\nYou have successfully enrolled in {enrollment.course.title}.\n\nAccess your student dashboard here:\nhttp://localhost:8080/dashboard?token={enrollment.student.magic_link_token}\n\nThank you for choosing Sysfotech!',
-                from_email=from_email,
-                recipient_list=[enrollment.student.email],
-                fail_silently=False,
-            )
+        session = CheckoutSession.objects.filter(payment_id=order_id).first()
+        if session:
+            if session.status != 'completed':
+                session.status = 'completed'
+                session.save()
+                
+                student = Student.objects.filter(email=session.email).first()
+                if not student:
+                    student = Student.objects.create(
+                        name=session.name,
+                        email=session.email,
+                        phone_number=session.phone,
+                        magic_link_token=session.magic_link_token
+                    )
+                
+                enrollment = Enrollment.objects.create(
+                    student=student,
+                    course=session.course,
+                    amount=session.amount,
+                    payment_provider='paypal',
+                    payment_id=order_id,
+                    status='paid'
+                )
+                
+                try:
+                    send_invoice_email(enrollment)
+                except Exception as e:
+                    print(f'Error sending invoice email: {e}')
             return Response({'status': 'success'})
         return Response({'status': 'failed'}, status=400)
 
@@ -485,23 +751,64 @@ class TestCaptureView(APIView):
 
     def post(self, request):
         payment_id = request.data.get('payment_id')
-        enrollment = Enrollment.objects.filter(payment_id=payment_id).first()
-        if enrollment:
-            if enrollment.status != 'paid':
-                enrollment.status = 'paid'
-                enrollment.save()
+        session = CheckoutSession.objects.filter(payment_id=payment_id).first()
+        if session:
+            if session.status != 'completed':
+                session.status = 'completed'
+                session.save()
                 
-                from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
-                send_mail(
-                    subject='Welcome to your Course! - Sysfotech',
-                    message=f'Hello {enrollment.student.name},\n\nYou have successfully enrolled in {enrollment.course.title}.\n\nAccess your student dashboard here:\nhttp://localhost:8080/dashboard?token={enrollment.student.magic_link_token}\n\nThank you for choosing Sysfotech!',
-                    from_email=from_email,
-                    recipient_list=[enrollment.student.email],
-                    fail_silently=False,
+                student = Student.objects.filter(email=session.email).first()
+                if not student:
+                    student = Student.objects.create(
+                        name=session.name,
+                        email=session.email,
+                        phone_number=session.phone,
+                        magic_link_token=session.magic_link_token
+                    )
+                
+                enrollment = Enrollment.objects.create(
+                    student=student,
+                    course=session.course,
+                    amount=session.amount,
+                    payment_provider=session.payment_provider,
+                    payment_id=payment_id,
+                    status='paid'
                 )
+                
+                try:
+                    send_invoice_email(enrollment)
+                except Exception as e:
+                    print(f'Error sending invoice email: {e}')
             return Response({'status': 'success'})
         return Response({'status': 'failed'}, status=400)
 
+class LoginView(APIView):
+    permission_classes = []
+
+    def post(self, request):
+        email = request.data.get('email')
+        if not email:
+            return Response({'error': 'Email is required'}, status=400)
+            
+        student = Student.objects.filter(email=email).first()
+        if student:
+            magic_link_url = f"http://localhost:8080/verify?token={student.magic_link_token}"
+            from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
+            
+            try:
+                from django.core.mail import send_mail
+                send_mail(
+                    subject='Your Course Access Link - Sysfotech',
+                    message=f'Hello {student.name},\n\nClick the link below to securely access your student dashboard:\n{magic_link_url}\n\nThank you for choosing Sysfotech!',
+                    from_email=from_email,
+                    recipient_list=[student.email],
+                    fail_silently=False,
+                )
+                return Response({'message': 'We have sent a secure access link to your email!'})
+            except Exception as e:
+                return Response({'error': 'Failed to send access link email. Please try again.'}, status=500)
+            
+        return Response({'error': 'No account found with this email.'}, status=404)
 class StudentEnrollmentsView(APIView):
     permission_classes = []
 
@@ -521,6 +828,7 @@ class StudentEnrollmentsView(APIView):
         data = []
         for e in enrollments:
             data.append({
+                'id': e.id,
                 'course': {
                     'title': e.course.title,
                     'slug': e.course.slug,
@@ -535,3 +843,85 @@ class StudentEnrollmentsView(APIView):
             'enrollments': data, 
             'student': {'name': student.name, 'email': student.email}
         })
+
+
+class InvoiceDownloadView(APIView):
+    """Download a PDF invoice for a specific enrollment."""
+    permission_classes = []
+
+    def get(self, request, enrollment_id):
+        token = request.headers.get('Authorization')
+        if not token:
+            return Response({'error': 'Unauthorized'}, status=401)
+
+        token = token.replace('Bearer ', '')
+        student = Student.objects.filter(magic_link_token=token).first()
+
+        if not student:
+            return Response({'error': 'Invalid token'}, status=401)
+
+        enrollment = Enrollment.objects.filter(
+            id=enrollment_id, student=student, status='paid'
+        ).first()
+
+        if not enrollment:
+            return Response({'error': 'Invoice not found'}, status=404)
+
+        pdf_bytes = generate_invoice_pdf(enrollment)
+        inv_number = f'INV-{enrollment.id:05d}'
+
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{inv_number}.pdf"'
+        return response
+
+# ─── React Admin APIs ───────────────────────────────────────────────
+from rest_framework.authtoken.models import Token
+from django.contrib.auth import authenticate
+from rest_framework.permissions import IsAdminUser, AllowAny
+from .serializers import (
+    StudentSerializer, CourseSerializer, CheckoutSessionSerializer,
+    CouponSerializer, EnrollmentSerializer, TransactionSerializer
+)
+
+class AdminLoginView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        username = request.data.get('username')
+        password = request.data.get('password')
+        user = authenticate(username=username, password=password)
+        
+        if user and user.is_superuser:
+            token, _ = Token.objects.get_or_create(user=user)
+            return Response({'token': token.key, 'username': user.username})
+        return Response({'error': 'Invalid credentials or not an admin'}, status=status.HTTP_401_UNAUTHORIZED)
+
+class StudentViewSet(viewsets.ModelViewSet):
+    queryset = Student.objects.all().order_by('-created_at')
+    serializer_class = StudentSerializer
+    permission_classes = [IsAdminUser]
+
+class CourseViewSet(viewsets.ModelViewSet):
+    queryset = Course.objects.all().order_by('-created_at')
+    serializer_class = CourseSerializer
+    permission_classes = [IsAdminUser]
+
+class CheckoutSessionViewSet(viewsets.ModelViewSet):
+    queryset = CheckoutSession.objects.all().order_by('-created_at')
+    serializer_class = CheckoutSessionSerializer
+    permission_classes = [IsAdminUser]
+
+class CouponViewSet(viewsets.ModelViewSet):
+    queryset = Coupon.objects.all().order_by('-created_at')
+    serializer_class = CouponSerializer
+    permission_classes = [IsAdminUser]
+
+class EnrollmentViewSet(viewsets.ModelViewSet):
+    queryset = Enrollment.objects.all().select_related('student', 'course').order_by('-created_at')
+    serializer_class = EnrollmentSerializer
+    permission_classes = [IsAdminUser]
+
+class TransactionViewSet(viewsets.ModelViewSet):
+    queryset = Transaction.objects.all().order_by('-created_at')
+    serializer_class = TransactionSerializer
+    permission_classes = [IsAdminUser]

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import ContactInfo, Inquiry
+from .models import ContactInfo, Inquiry, Student, Course, CheckoutSession, Coupon, Enrollment, Transaction
 import re
 
 class ContactInfoSerializer(serializers.ModelSerializer):
@@ -70,4 +70,66 @@ class CourseRegistrationSerializer(serializers.Serializer):
     demoBatch = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
     demoTime = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
     consent = serializers.BooleanField()
+
+class StudentSerializer(serializers.ModelSerializer):
+    # Show which courses this student is enrolled in
+    enrolled_courses = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Student
+        fields = '__all__'
+
+    def get_enrolled_courses(self, obj):
+        enrollments = obj.enrollments.select_related('course').all()
+        return [
+            {
+                'course_title': e.course.title if e.course else '-',
+                'status': e.status,
+                'amount': str(e.amount),
+                'payment_provider': e.payment_provider,
+                'enrolled_at': e.created_at.isoformat() if e.created_at else None,
+            }
+            for e in enrollments
+        ]
+
+class CourseSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Course
+        fields = '__all__'
+
+class CheckoutSessionSerializer(serializers.ModelSerializer):
+    # Show course name instead of ID
+    course_title = serializers.CharField(source='course.title', read_only=True, default='-')
+
+    class Meta:
+        model = CheckoutSession
+        fields = '__all__'
+
+class CouponSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Coupon
+        fields = '__all__'
+
+class EnrollmentSerializer(serializers.ModelSerializer):
+    # Show student details instead of just ID
+    student_name = serializers.CharField(source='student.name', read_only=True)
+    student_email = serializers.CharField(source='student.email', read_only=True)
+    student_phone = serializers.CharField(source='student.phone_number', read_only=True, default='-')
+    # Show course name instead of just ID
+    course_title = serializers.CharField(source='course.title', read_only=True)
+
+    class Meta:
+        model = Enrollment
+        fields = '__all__'
+
+class TransactionSerializer(serializers.ModelSerializer):
+    # Show student details instead of just ID
+    student_name = serializers.CharField(source='student.name', read_only=True)
+    student_email = serializers.CharField(source='student.email', read_only=True)
+    # Show course name instead of just ID
+    course_title = serializers.CharField(source='course.title', read_only=True, default='-')
+
+    class Meta:
+        model = Transaction
+        fields = '__all__'
 

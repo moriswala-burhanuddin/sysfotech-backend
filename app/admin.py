@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.utils.html import format_html
 from django.urls import reverse
 from django.utils.safestring import mark_safe
-from app.models import ContactInfo, Inquiry , Student
+from app.models import ContactInfo, Inquiry, Student, Coupon, CheckoutSession, Course, Enrollment, Transaction 
 
 # Register your models here.
 
@@ -94,8 +94,63 @@ class InquiryAdmin(admin.ModelAdmin):
     mark_as_cancelled.short_description = "Mark selected inquiries as cancelled"
 
 
+class EnrollmentInline(admin.TabularInline):
+    model = Enrollment
+    extra = 0
+    readonly_fields = ['payment_id', 'created_at', 'updated_at']
+
+class TransactionInline(admin.TabularInline):
+    model = Transaction
+    extra = 0
+    readonly_fields = ['payment_id', 'created_at']
+
 @admin.register(Student)
 class StudentAdmin(admin.ModelAdmin):
-    list_display = [field.name for field in Student._meta.fields]
+    list_display = ['id', 'name', 'email', 'phone_number', 'created_at']
+    search_fields = ['name', 'email', 'phone_number']
+    readonly_fields = ['magic_link_token', 'created_at', 'updated_at']
+    list_filter = ['created_at']
+    inlines = [EnrollmentInline, TransactionInline]
     list_per_page = 25
     save_on_top = True
+
+@admin.register(Course)
+class CourseAdmin(admin.ModelAdmin):
+    list_display = ['title', 'slug', 'price', 'is_active', 'created_at']
+    list_filter = ['is_active', 'created_at']
+    search_fields = ['title', 'slug']
+    prepopulated_fields = {'slug': ('title',)}
+    list_editable = ['price', 'is_active']
+    list_per_page = 25
+
+@admin.register(Enrollment)
+class EnrollmentAdmin(admin.ModelAdmin):
+    list_display = ['student', 'course', 'amount', 'status', 'payment_provider', 'created_at']
+    list_filter = ['status', 'payment_provider', 'created_at', 'course']
+    search_fields = ['student__name', 'student__email', 'payment_id']
+    readonly_fields = ['created_at', 'updated_at']
+    list_per_page = 25
+
+@admin.register(Transaction)
+class TransactionAdmin(admin.ModelAdmin):
+    list_display = ['student', 'course', 'amount', 'status', 'payment_method', 'created_at']
+    list_filter = ['status', 'payment_method', 'created_at']
+    search_fields = ['student__name', 'student__email', 'payment_id']
+    readonly_fields = ['created_at']
+    list_per_page = 25
+
+@admin.register(Coupon)
+class CouponAdmin(admin.ModelAdmin):
+    list_display = ['code', 'discount_percentage', 'is_active', 'uses_count', 'max_uses', 'created_at']
+    list_filter = ['is_active', 'created_at']
+    search_fields = ['code']
+    readonly_fields = ['uses_count', 'created_at', 'updated_at']
+    list_per_page = 25
+
+@admin.register(CheckoutSession)
+class CheckoutSessionAdmin(admin.ModelAdmin):
+    list_display = ['session_id', 'email', 'name', 'course', 'amount', 'payment_provider', 'status', 'created_at']
+    list_filter = ['status', 'payment_provider', 'created_at']
+    search_fields = ['email', 'name', 'session_id', 'payment_id']
+    readonly_fields = ['session_id', 'magic_link_token', 'created_at', 'updated_at']
+    list_per_page = 25
