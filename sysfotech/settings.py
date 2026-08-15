@@ -25,12 +25,12 @@ load_dotenv(BASE_DIR / '.env')
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-ognka!z9o47ukvjelotgiznc8w=2$yr!ds+*+fxmw+vf#o2*-s'
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-ognka!z9o47ukvjelotgiznc8w=2$yr!ds+*+fxmw+vf#o2*-s')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv('DJANGO_DEBUG', 'True').lower() in ('true', '1', 'yes')
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
 
 
 # Application definition
@@ -84,6 +84,8 @@ WSGI_APPLICATION = 'sysfotech.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
+# NOTE: This first DATABASES block is overridden by the one below (line ~215).
+# The production config below handles both SQLite (local) and PostgreSQL (VPS).
 
 DATABASES = {
     'default': {
@@ -196,32 +198,50 @@ CACHES = {
 SESSION_ENGINE = 'django.contrib.sessions.backends.db'  # Use database for sessions
 SESSION_COOKIE_AGE = 3600  # 1 hour
 SESSION_SAVE_EVERY_REQUEST = False
-SESSION_COOKIE_SECURE = True  # Set to True in production with HTTPS
+SESSION_COOKIE_SECURE = not DEBUG  # True in production with HTTPS
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 
 # CSRF settings
-CSRF_COOKIE_SECURE = True  # Set to True in production with HTTPS
+CSRF_COOKIE_SECURE = not DEBUG  # True in production with HTTPS
 CSRF_COOKIE_HTTPONLY = True
 CSRF_COOKIE_SAMESITE = 'Lax'
-CSRF_TRUSTED_ORIGINS = ['https://sysfotech.uk', 'http://sysfotech.uk']
+CSRF_TRUSTED_ORIGINS = [
+    'https://sysfotech.uk',
+    'http://sysfotech.uk',
+    'https://www.sysfotech.uk',
+    'https://api.sysfotech.uk',
+]
 
 # Additional session security
 SESSION_COOKIE_NAME = 'sessionid'
 CSRF_COOKIE_NAME = 'csrftoken'
 
-# Database connection optimization
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-        'OPTIONS': {
-            'timeout': 20,  # 20 seconds timeout
-        },
-        'CONN_MAX_AGE': 60,  # Keep connections alive for 60 seconds
+# Database configuration — uses PostgreSQL in production, SQLite locally
+if os.getenv('DB_ENGINE') == 'postgresql':
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv('DB_NAME', 'sysfotech_db'),
+            'USER': os.getenv('DB_USER', 'sysfotech_user'),
+            'PASSWORD': os.getenv('DB_PASSWORD', ''),
+            'HOST': os.getenv('DB_HOST', '127.0.0.1'),
+            'PORT': os.getenv('DB_PORT', '5432'),
+            'CONN_MAX_AGE': 60,
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+            'OPTIONS': {
+                'timeout': 20,
+            },
+            'CONN_MAX_AGE': 60,
+        }
+    }
 
 # CORS settings for React frontend
 CORS_ALLOW_ALL_ORIGINS = False  # Changed from True to False for security
@@ -229,14 +249,18 @@ CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     "https://sysfotech.uk",
     "http://sysfotech.uk",
-    "https://www.sysfotech.uk",  # Add www subdomain
-    "http://www.sysfotech.uk",   # Add www subdomain
+    "https://www.sysfotech.uk",
+    "http://www.sysfotech.uk",
+    "https://api.sysfotech.uk",
+    "http://api.sysfotech.uk",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:8081",
     "http://127.0.0.1:8081",
     "http://localhost:8080",
     "http://127.0.0.1:8080",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
 ]
 
 # Add these new CORS settings
@@ -287,9 +311,9 @@ EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = "sysfotech.uk"
 EMAIL_PORT = 465
 EMAIL_USE_SSL = True
-EMAIL_HOST_USER = "info@sysfotech.uk"
-EMAIL_HOST_PASSWORD = "infosysfotech@5253"
-DEFAULT_FROM_EMAIL = "Sysfotech IT Services <info@sysfotech.uk>"
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', 'info@sysfotech.uk')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', 'infosysfotech@5253')
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'Sysfotech IT Services <info@sysfotech.uk>')
 
 # Payment Gateways Configuration
 STRIPE_PUBLIC_KEY = os.getenv('STRIPE_PUBLIC_KEY', 'pk_test_TYooMQauvdEDq54NiTphI7jx')

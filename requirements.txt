@@ -6,3 +6,5 @@ Pillow
 whitenoise
 stripe
 python-dotenv
+gunicorn
+psycopg2-binary
