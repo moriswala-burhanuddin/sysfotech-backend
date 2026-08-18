@@ -1096,7 +1096,11 @@ class TestCaptureView(APIView):
                                 
                                 pm_id = intent_obj.payment_method
                                 if pm_id:
-                                    stripe.PaymentMethod.attach(pm_id, customer=student.stripe_customer_id)
+                                    try:
+                                        stripe.PaymentMethod.attach(pm_id, customer=student.stripe_customer_id)
+                                    except stripe.error.InvalidRequestError:
+                                        # Payment method may already be attached to the customer, which is fine
+                                        pass
                                     stripe.Customer.modify(student.stripe_customer_id, invoice_settings={'default_payment_method': pm_id})
                                 
                                 subscription = stripe.Subscription.create(
