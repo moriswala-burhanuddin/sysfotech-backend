@@ -1060,6 +1060,9 @@ class TestCaptureView(APIView):
     permission_classes = []
 
     def post(self, request):
+        import stripe
+        import os
+        stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
         payment_id = request.data.get('payment_id')
         session = CheckoutSession.objects.filter(payment_id=payment_id).first()
         if session:
