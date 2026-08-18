@@ -902,6 +902,7 @@ class StripeWebhookView(APIView):
     permission_classes = []
 
     def post(self, request):
+        stripe.api_key = settings.STRIPE_SECRET_KEY
         payload = request.body
         sig_header = request.META.get('HTTP_STRIPE_SIGNATURE')
         endpoint_secret = getattr(settings, 'STRIPE_WEBHOOK_SECRET', None)
