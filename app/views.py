@@ -959,7 +959,11 @@ class StripeWebhookView(APIView):
                             pm_id = intent_obj.payment_method
                             
                             if pm_id:
-                                stripe.PaymentMethod.attach(pm_id, customer=student.stripe_customer_id)
+                                try:
+                                    stripe.PaymentMethod.attach(pm_id, customer=student.stripe_customer_id)
+                                except stripe.error.InvalidRequestError:
+                                    # Payment method may already be attached to the customer, which is fine
+                                    pass
                                 stripe.Customer.modify(student.stripe_customer_id, invoice_settings={'default_payment_method': pm_id})
                             
                             subscription = stripe.Subscription.create(
@@ -984,6 +988,10 @@ class StripeWebhookView(APIView):
 
         elif event.type == 'invoice.paid':
             invoice = event.data.object
+            # Ignore $0 invoices (e.g. from free trial start)
+            if invoice.get('amount_paid', 0) == 0:
+                return Response({'status': 'ignored'})
+
             subscription_id = invoice.get('subscription')
             if subscription_id:
                 enrollment = Enrollment.objects.filter(stripe_subscription_id=subscription_id).first()
