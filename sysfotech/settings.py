@@ -306,16 +306,31 @@ SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = 'DENY'
 
-# Email Configurations
-EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-EMAIL_HOST = "sysfotech.uk"
-EMAIL_PORT = 465
-EMAIL_USE_SSL = True
-EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', 'info@sysfotech.uk')
-EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', 'infosysfotech@5253')
-DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'Sysfotech IT Services <info@sysfotech.uk>')
+# Email Configuration
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtpout.secureserver.net'
+EMAIL_PORT = 587
+EMAIL_HOST_USER = 'info@sysfotech.uk'
+EMAIL_HOST_PASSWORD = 'sysfotech@5253'
+EMAIL_USE_TLS = True
+DEFAULT_FROM_EMAIL = 'SYSFOTech <info@sysfotech.uk>'
+ADMINS = [('Admin', 'info@sysfotech.uk')]
 
 # Payment Gateways Configuration
 STRIPE_PUBLIC_KEY = os.getenv('STRIPE_PUBLIC_KEY', 'pk_test_TYooMQauvdEDq54NiTphI7jx')
 STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY', 'sk_test_4eC39HqLyjWDarjtT1zdp7dc')
 PAYPAL_CLIENT_ID = os.getenv('PAYPAL_CLIENT_ID', 'AT_test_client_id_here')
+
+# --- LOCAL DEVELOPMENT SSL BYPASS ---
+# This fixes the "CERTIFICATE_VERIFY_FAILED" error on Windows when connecting to GoDaddy's SMTP
+import ssl
+import smtplib
+
+class _UnverifiedSMTP(smtplib.SMTP):
+    def starttls(self, *args, **kwargs):
+        kwargs['context'] = ssl._create_unverified_context()
+        if 'keyfile' in kwargs: del kwargs['keyfile']
+        if 'certfile' in kwargs: del kwargs['certfile']
+        super().starttls(*args, **kwargs)
+
+smtplib.SMTP = _UnverifiedSMTP

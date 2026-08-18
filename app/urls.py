@@ -13,6 +13,8 @@ router.register(r'coupons', views.CouponViewSet)
 router.register(r'enrollments', views.EnrollmentViewSet)
 router.register(r'transactions', views.TransactionViewSet)
 
+router.register(r'installments', views.PaymentInstallmentViewSet, basename='installment')
+
 # The API URLs are now determined automatically by the router
 urlpatterns = [
     # React Admin Login

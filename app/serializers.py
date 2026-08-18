@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import ContactInfo, Inquiry, Student, Course, CheckoutSession, Coupon, Enrollment, Transaction
+from .models import ContactInfo, Inquiry, Student, Course, CheckoutSession, Coupon, Enrollment, Transaction, PaymentInstallment
 import re
 
 class ContactInfoSerializer(serializers.ModelSerializer):
@@ -86,6 +86,7 @@ class StudentSerializer(serializers.ModelSerializer):
                 'course_title': e.course.title if e.course else '-',
                 'status': e.status,
                 'amount': str(e.amount),
+                'payment_plan': e.payment_plan,
                 'payment_provider': e.payment_provider,
                 'enrolled_at': e.created_at.isoformat() if e.created_at else None,
             }
@@ -110,13 +111,24 @@ class CouponSerializer(serializers.ModelSerializer):
         model = Coupon
         fields = '__all__'
 
+class PaymentInstallmentSerializer(serializers.ModelSerializer):
+    student_name = serializers.CharField(source='enrollment.student.name', read_only=True)
+    student_email = serializers.CharField(source='enrollment.student.email', read_only=True)
+    course_title = serializers.CharField(source='enrollment.course.title', read_only=True)
+
+    class Meta:
+        model = PaymentInstallment
+        fields = '__all__'
+
 class EnrollmentSerializer(serializers.ModelSerializer):
     # Show student details instead of just ID
     student_name = serializers.CharField(source='student.name', read_only=True)
     student_email = serializers.CharField(source='student.email', read_only=True)
     student_phone = serializers.CharField(source='student.phone_number', read_only=True, default='-')
+    student_stripe_customer_id = serializers.CharField(source='student.stripe_customer_id', read_only=True, default='-')
     # Show course name instead of just ID
     course_title = serializers.CharField(source='course.title', read_only=True)
+    installments = PaymentInstallmentSerializer(many=True, read_only=True)
 
     class Meta:
         model = Enrollment

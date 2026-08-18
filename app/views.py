@@ -1,4 +1,4 @@
-from django.shortcuts import render
+from django.shortcuts import render, get_object_or_404
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -179,6 +179,105 @@ def send_invoice_email(enrollment):
         to=[enrollment.student.email],
     )
     email.attach(f'{inv_number}.pdf', pdf_bytes, 'application/pdf')
+    email.send(fail_silently=False)
+    
+    # Send separate admin notification
+    try:
+        send_admin_payment_notification(enrollment)
+    except Exception as e:
+        print(f"Error sending admin payment notification: {e}")
+
+def send_installment_receipt_email(installment):
+    """Send an email receipt for a successful auto-pay installment."""
+    enrollment = installment.enrollment
+    from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
+    magic_link_url = f'http://localhost:8080/verify?token={enrollment.student.magic_link_token}'
+
+    email = EmailMessage(
+        subject=f'Payment Receipt: {installment.name} - Sysfotech',
+        body=(
+            f'Hello {enrollment.student.name},\n\n'
+            f'We successfully processed your payment of £{installment.amount} for {installment.name} of {enrollment.course.title}!\n\n'
+            f'Thank you for continuing your learning journey with us.\n\n'
+            f'Access your student dashboard here:\n{magic_link_url}\n\n'
+            f'Best regards,\nSysfotech IT Services'
+        ),
+        from_email=from_email,
+        to=[enrollment.student.email],
+    )
+    email.send(fail_silently=False)
+    
+    # Send separate admin notification
+    try:
+        send_admin_installment_notification(installment, 'SUCCESS')
+    except Exception as e:
+        print(f"Error sending admin installment notification: {e}")
+
+def send_installment_failed_email(installment):
+    """Send an email warning for a failed auto-pay installment."""
+    enrollment = installment.enrollment
+    from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
+    magic_link_url = f'http://localhost:8080/verify?token={enrollment.student.magic_link_token}'
+
+    email = EmailMessage(
+        subject=f'Action Required: Payment Failed for {installment.name} - Sysfotech',
+        body=(
+            f'Hello {enrollment.student.name},\n\n'
+            f'We attempted to process your auto-pay installment of £{installment.amount} for {installment.name} of {enrollment.course.title}, but the charge was declined.\n\n'
+            f'Please access your student dashboard to update your payment method or contact us for support:\n{magic_link_url}\n\n'
+            f'Best regards,\nSysfotech IT Services'
+        ),
+        from_email=from_email,
+        to=[enrollment.student.email],
+    )
+    email.send(fail_silently=False)
+    
+    # Send separate admin notification
+    try:
+        send_admin_installment_notification(installment, 'FAILED')
+    except Exception as e:
+        print(f"Error sending admin installment failed notification: {e}")
+
+def send_admin_payment_notification(enrollment):
+    """Send a dedicated email to the admin with full student and payment details."""
+    from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
+    admin_email = 'info@sysfotech.uk'
+    
+    subject = f'New Payment Received: {enrollment.course.title}'
+    body = (
+        f"A new payment has been processed!\n\n"
+        f"Student Details:\n"
+        f"Name: {enrollment.student.name}\n"
+        f"Email: {enrollment.student.email}\n"
+        f"Phone: {getattr(enrollment.student, 'phone_number', 'N/A')}\n\n"
+        f"Enrollment Details:\n"
+        f"Course: {enrollment.course.title}\n"
+        f"Payment Plan: {enrollment.payment_plan}\n"
+        f"Amount Paid: £{enrollment.amount_paid}\n"
+        f"Amount Remaining: £{enrollment.amount_remaining}\n"
+    )
+    email = EmailMessage(subject=subject, body=body, from_email=from_email, to=[admin_email])
+    email.send(fail_silently=False)
+
+def send_admin_installment_notification(installment, status):
+    """Send a dedicated email to the admin about an installment status."""
+    enrollment = installment.enrollment
+    from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
+    admin_email = 'info@sysfotech.uk'
+    
+    subject = f'Installment {status.capitalize()}: {enrollment.student.name}'
+    body = (
+        f"An auto-pay installment was processed with status: {status.upper()}.\n\n"
+        f"Student Details:\n"
+        f"Name: {enrollment.student.name}\n"
+        f"Email: {enrollment.student.email}\n\n"
+        f"Installment Details:\n"
+        f"Course: {enrollment.course.title}\n"
+        f"Installment Name: {installment.name}\n"
+        f"Amount: £{installment.amount}\n"
+        f"Status: {status}\n"
+    )
+    email = EmailMessage(subject=subject, body=body, from_email=from_email, to=[admin_email])
     email.send(fail_silently=False)
 
 # Create your views here.
@@ -484,6 +583,7 @@ class CouponValidateView(APIView):
             return Response({'error': 'Coupon usage limit has been reached'}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({
+            'code': coupon.code,
             'discount_percentage': coupon.discount_percentage,
             'message': 'Coupon applied successfully'
         })
@@ -502,18 +602,29 @@ class CreateStripePaymentIntentView(APIView):
             course_slug = data.get('course_slug')
             course_title = data.get('course_title', 'Mock Course')
             coupon_code = data.get('coupon_code')
+            payment_plan = data.get('payment_plan', 'full')
             
             # Fetch course to get real price (to prevent tampering)
             course = Course.objects.filter(slug=course_slug).first()
             if not course:
                 # Use a default price for testing if course not found in db yet
-                price = 99.99
+                price = 351.00 if payment_plan == 'full' else 195.00
                 course, _ = Course.objects.get_or_create(
                     slug=course_slug or 'selected-course',
-                    defaults={'title': course_title, 'price': price}
+                    defaults={
+                        'title': course_title, 
+                        'price': 429.00,
+                        'one_time_price': 351.00,
+                        'installment_admission_fee': 195.00
+                    }
                 )
             else:
-                price = float(course.price)
+                if payment_plan == 'installment' and course.installment_admission_fee:
+                    price = float(course.installment_admission_fee)
+                elif course.one_time_price:
+                    price = float(course.one_time_price)
+                else:
+                    price = float(course.price)
                 
             if coupon_code:
                 coupon = Coupon.objects.filter(code=coupon_code, is_active=True).first()
@@ -551,12 +662,33 @@ class CreateStripePaymentIntentView(APIView):
                     )
 
             # Create PaymentIntent
-            intent = stripe.PaymentIntent.create(
-                amount=amount,
-                currency='gbp',
-                payment_method_types=['card'],
-                metadata={'student_email': email, 'course_slug': course_slug}
-            )
+            intent_kwargs = {
+                'amount': amount,
+                'currency': 'gbp',
+                'payment_method_types': ['card'],
+                'metadata': {
+                    'student_name': name,
+                    'student_email': email,
+                    'student_phone': phone or 'N/A',
+                    'course_title': course_title,
+                    'payment_plan': payment_plan,
+                }
+            }
+            if payment_plan == 'installment':
+                customer_id = None
+                if student and student.stripe_customer_id:
+                    customer_id = student.stripe_customer_id
+                else:
+                    customer = stripe.Customer.create(email=email, name=name)
+                    customer_id = customer.id
+                    if student:
+                        student.stripe_customer_id = customer.id
+                        student.save()
+                
+                intent_kwargs['customer'] = customer_id
+                intent_kwargs['setup_future_usage'] = 'off_session'
+            
+            intent = stripe.PaymentIntent.create(**intent_kwargs)
             
             # Create CheckoutSession
             session = CheckoutSession.objects.create(
@@ -566,6 +698,7 @@ class CreateStripePaymentIntentView(APIView):
                 course=course,
                 amount=price,
                 payment_provider='stripe',
+                payment_plan=payment_plan,
                 payment_id=intent.id,
                 status='pending'
             )
@@ -593,16 +726,27 @@ class CreatePayPalOrderView(APIView):
             course_slug = data.get('course_slug')
             course_title = data.get('course_title', 'Mock Course')
             coupon_code = data.get('coupon_code')
+            payment_plan = data.get('payment_plan', 'full')
             
             course = Course.objects.filter(slug=course_slug).first()
             if not course:
-                price = 99.99
+                price = 351.00 if payment_plan == 'full' else 195.00
                 course, _ = Course.objects.get_or_create(
                     slug=course_slug or 'selected-course',
-                    defaults={'title': course_title, 'price': price}
+                    defaults={
+                        'title': course_title, 
+                        'price': 429.00,
+                        'one_time_price': 351.00,
+                        'installment_admission_fee': 195.00
+                    }
                 )
             else:
-                price = float(course.price)
+                if payment_plan == 'installment' and course.installment_admission_fee:
+                    price = float(course.installment_admission_fee)
+                elif course.one_time_price:
+                    price = float(course.one_time_price)
+                else:
+                    price = float(course.price)
 
             if coupon_code:
                 coupon = Coupon.objects.filter(code=coupon_code, is_active=True).first()
@@ -648,6 +792,7 @@ class CreatePayPalOrderView(APIView):
                 course=course,
                 amount=price,
                 payment_provider='paypal',
+                payment_plan=payment_plan,
                 payment_id=fake_order_id,
                 status='pending'
             )
@@ -662,15 +807,110 @@ class CreatePayPalOrderView(APIView):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 import json
+from datetime import timedelta
+from django.utils import timezone
+from .models import PaymentInstallment
+
+def create_enrollment_and_installments(session, payment_id, provider):
+    student = Student.objects.filter(email=session.email).first()
+    if not student:
+        student = Student.objects.create(
+            name=session.name,
+            email=session.email,
+            phone_number=session.phone,
+            magic_link_token=session.magic_link_token
+        )
+    
+    course = session.course
+    # Calculate amounts
+    if session.payment_plan == 'installment':
+        # E.g. total 429, paid 195, remaining 234
+        total_amount = float(course.price) if course else 429.00
+        amount_paid = float(session.amount)
+        amount_remaining = total_amount - amount_paid
+    else:
+        # Full payment
+        total_amount = float(session.amount)
+        amount_paid = float(session.amount)
+        amount_remaining = 0.00
+    
+    enrollment = Enrollment.objects.create(
+        student=student,
+        course=course,
+        amount=session.amount,
+        total_amount=total_amount,
+        amount_paid=amount_paid,
+        amount_remaining=amount_remaining,
+        payment_provider=provider,
+        payment_plan=session.payment_plan,
+        payment_id=payment_id,
+        status='paid'
+    )
+    
+    # Create installments
+    today = timezone.now().date()
+    if session.payment_plan == 'installment':
+        # Admission Fee
+        PaymentInstallment.objects.create(
+            enrollment=enrollment,
+            installment_number=1,
+            name="Admission Fee",
+            amount=amount_paid,
+            due_date=today,
+            status='paid',
+            payment_id=payment_id
+        )
+        # Installment 1
+        inst_amount = amount_remaining / 2
+        PaymentInstallment.objects.create(
+            enrollment=enrollment,
+            installment_number=2,
+            name="Installment 1",
+            amount=inst_amount,
+            due_date=today + timedelta(days=30),
+            status='pending'
+        )
+        # Installment 2
+        PaymentInstallment.objects.create(
+            enrollment=enrollment,
+            installment_number=3,
+            name="Installment 2",
+            amount=inst_amount,
+            due_date=today + timedelta(days=60),
+            status='pending'
+        )
+    else:
+        # Full payment
+        PaymentInstallment.objects.create(
+            enrollment=enrollment,
+            installment_number=1,
+            name="Full Payment",
+            amount=amount_paid,
+            due_date=today,
+            status='paid',
+            payment_id=payment_id
+        )
+    
+    try:
+        send_invoice_email(enrollment)
+    except Exception as e:
+        print(f'Error sending invoice email: {e}')
+    
+    return enrollment
 
 class StripeWebhookView(APIView):
     permission_classes = []
 
     def post(self, request):
         payload = request.body
+        sig_header = request.META.get('HTTP_STRIPE_SIGNATURE')
+        endpoint_secret = getattr(settings, 'STRIPE_WEBHOOK_SECRET', None)
         
         try:
-            event = stripe.Event.construct_from(json.loads(payload), stripe.api_key)
+            if endpoint_secret and sig_header:
+                event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
+            else:
+                event = stripe.Event.construct_from(json.loads(payload), stripe.api_key)
         except Exception as e:
             return HttpResponse(status=400)
 
@@ -679,34 +919,114 @@ class StripeWebhookView(APIView):
             payment_intent = event.data.object
             payment_id = payment_intent.id
             
+            # Normal checkout session payment
             session = CheckoutSession.objects.filter(payment_id=payment_id).first()
             if session and session.status != 'completed':
                 session.status = 'completed'
                 session.save()
                 
-                student = Student.objects.filter(email=session.email).first()
-                if not student:
-                    student = Student.objects.create(
-                        name=session.name,
-                        email=session.email,
-                        phone_number=session.phone,
-                        magic_link_token=session.magic_link_token
-                    )
+                enrollment = create_enrollment_and_installments(session, payment_id, 'stripe')
                 
-                enrollment = Enrollment.objects.create(
-                    student=student,
-                    course=session.course,
-                    amount=session.amount,
-                    payment_provider='stripe',
-                    payment_id=payment_id,
-                    status='paid'
-                )
+                # Create Stripe Subscription for installment plans
+                import os
+                price_id = enrollment.course.stripe_installment_price_id or os.getenv('STRIPE_INSTALLMENT_PRICE_ID')
+                if enrollment.payment_plan == 'installment' and not enrollment.stripe_subscription_id and price_id:
+                    student = enrollment.student
+                    
+                    # Ensure student has stripe_customer_id from the payment intent
+                    customer_id = getattr(payment_intent, 'customer', None)
+                    if not student.stripe_customer_id and customer_id:
+                        student.stripe_customer_id = customer_id
+                        student.save()
+
+                    if student.stripe_customer_id:
+                        try:
+                            # Calculate exact date next month
+                            now = timezone.now()
+                            month = now.month + 1
+                            year = now.year
+                            if month > 12:
+                                month = 1
+                                year += 1
+                            import calendar
+                            max_day = calendar.monthrange(year, month)[1]
+                            day = min(now.day, max_day)
+                            next_month = now.replace(year=year, month=month, day=day, hour=12, minute=0, second=0)
+                            
+                            # Retrieve the payment method attached to the intent
+                            intent_obj = stripe.PaymentIntent.retrieve(payment_id)
+                            pm_id = intent_obj.payment_method
+                            
+                            if pm_id:
+                                stripe.PaymentMethod.attach(pm_id, customer=student.stripe_customer_id)
+                                stripe.Customer.modify(student.stripe_customer_id, invoice_settings={'default_payment_method': pm_id})
+                            
+                            subscription = stripe.Subscription.create(
+                                customer=student.stripe_customer_id,
+                                items=[{'price': price_id}],
+                                default_payment_method=pm_id,
+                                trial_end=int(next_month.timestamp()),
+                                metadata={
+                                    'enrollment_id': enrollment.id,
+                                    'student_name': student.name,
+                                    'student_email': student.email,
+                                    'course_title': enrollment.course.title,
+                                    'payment_plan': enrollment.payment_plan,
+                                }
+                            )
+                            enrollment.stripe_subscription_id = subscription.id
+                            enrollment.save()
+                        except Exception as e:
+                            print(f"Error creating Stripe subscription: {e}")
                 
-                # Send PDF invoice email
-                try:
-                    send_invoice_email(enrollment)
-                except Exception as e:
-                    print(f'Error sending invoice email: {e}')
+                
+
+        elif event.type == 'invoice.paid':
+            invoice = event.data.object
+            subscription_id = invoice.get('subscription')
+            if subscription_id:
+                enrollment = Enrollment.objects.filter(stripe_subscription_id=subscription_id).first()
+                if enrollment:
+                    installment = PaymentInstallment.objects.filter(enrollment=enrollment, status='pending').order_by('installment_number').first()
+                    if installment:
+                        installment.status = 'paid'
+                        installment.payment_id = invoice.get('payment_intent')
+                        installment.stripe_invoice_id = invoice.id
+                        installment.stripe_payment_intent_id = invoice.get('payment_intent')
+                        installment.save()
+                        
+                        enrollment.amount_paid += installment.amount
+                        enrollment.amount_remaining -= installment.amount
+                        if enrollment.amount_remaining < 0:
+                            enrollment.amount_remaining = 0
+                        enrollment.save()
+                        
+                        try:
+                            send_installment_receipt_email(installment)
+                        except Exception as e:
+                            print(f"Error sending installment receipt: {e}")
+                        
+                        if not PaymentInstallment.objects.filter(enrollment=enrollment, status='pending').exists():
+                            try:
+                                stripe.Subscription.delete(subscription_id)
+                            except Exception as e:
+                                print(f"Error canceling subscription: {e}")
+
+        elif event.type == 'invoice.payment_failed':
+            invoice = event.data.object
+            subscription_id = invoice.get('subscription')
+            if subscription_id:
+                enrollment = Enrollment.objects.filter(stripe_subscription_id=subscription_id).first()
+                if enrollment:
+                    installment = PaymentInstallment.objects.filter(enrollment=enrollment, status='pending').order_by('installment_number').first()
+                    if installment:
+                        installment.status = 'failed'
+                        installment.save()
+                        
+                        try:
+                            send_installment_failed_email(installment)
+                        except Exception as e:
+                            print(f"Error sending installment failed email: {e}")
 
         return HttpResponse(status=200)
 
@@ -721,28 +1041,9 @@ class PayPalCaptureView(APIView):
                 session.status = 'completed'
                 session.save()
                 
-                student = Student.objects.filter(email=session.email).first()
-                if not student:
-                    student = Student.objects.create(
-                        name=session.name,
-                        email=session.email,
-                        phone_number=session.phone,
-                        magic_link_token=session.magic_link_token
-                    )
+                enrollment = create_enrollment_and_installments(session, order_id, 'paypal')
                 
-                enrollment = Enrollment.objects.create(
-                    student=student,
-                    course=session.course,
-                    amount=session.amount,
-                    payment_provider='paypal',
-                    payment_id=order_id,
-                    status='paid'
-                )
                 
-                try:
-                    send_invoice_email(enrollment)
-                except Exception as e:
-                    print(f'Error sending invoice email: {e}')
             return Response({'status': 'success'})
         return Response({'status': 'failed'}, status=400)
 
@@ -757,28 +1058,106 @@ class TestCaptureView(APIView):
                 session.status = 'completed'
                 session.save()
                 
-                student = Student.objects.filter(email=session.email).first()
-                if not student:
-                    student = Student.objects.create(
-                        name=session.name,
-                        email=session.email,
-                        phone_number=session.phone,
-                        magic_link_token=session.magic_link_token
-                    )
+                enrollment = create_enrollment_and_installments(session, payment_id, session.payment_provider)
                 
-                enrollment = Enrollment.objects.create(
-                    student=student,
-                    course=session.course,
-                    amount=session.amount,
-                    payment_provider=session.payment_provider,
-                    payment_id=payment_id,
-                    status='paid'
+                if session.payment_provider == 'stripe' and enrollment.payment_plan == 'installment' and not enrollment.stripe_subscription_id:
+                    import os
+                    price_id = enrollment.course.stripe_installment_price_id or os.getenv('STRIPE_INSTALLMENT_PRICE_ID')
+                    if price_id:
+                        student = enrollment.student
+                        try:
+                            intent_obj = stripe.PaymentIntent.retrieve(payment_id)
+                            customer_id = getattr(intent_obj, 'customer', None)
+                            if not student.stripe_customer_id and customer_id:
+                                student.stripe_customer_id = customer_id
+                                student.save()
+
+                            if student.stripe_customer_id:
+                                from django.utils import timezone
+                                now = timezone.now()
+                                month = now.month + 1
+                                year = now.year
+                                if month > 12:
+                                    month = 1
+                                    year += 1
+                                import calendar
+                                max_day = calendar.monthrange(year, month)[1]
+                                day = min(now.day, max_day)
+                                next_month = now.replace(year=year, month=month, day=day, hour=12, minute=0, second=0)
+                                
+                                pm_id = intent_obj.payment_method
+                                if pm_id:
+                                    stripe.PaymentMethod.attach(pm_id, customer=student.stripe_customer_id)
+                                    stripe.Customer.modify(student.stripe_customer_id, invoice_settings={'default_payment_method': pm_id})
+                                
+                                subscription = stripe.Subscription.create(
+                                    customer=student.stripe_customer_id,
+                                    items=[{'price': price_id}],
+                                    default_payment_method=pm_id,
+                                    trial_end=int(next_month.timestamp()),
+                                    metadata={
+                                        'enrollment_id': enrollment.id,
+                                        'student_name': student.name,
+                                        'student_email': student.email,
+                                        'course_title': enrollment.course.title,
+                                        'payment_plan': enrollment.payment_plan,
+                                    }
+                                )
+                                enrollment.stripe_subscription_id = subscription.id
+                                enrollment.save()
+                        except Exception as e:
+                            print(f"Error creating subscription in TestCaptureView: {e}")
+                
+                
+            return Response({'status': 'success'})
+        return Response({'status': 'failed'}, status=400)
+
+class TestInstallmentCaptureView(APIView):
+    permission_classes = []
+
+    def post(self, request):
+        payment_id = request.data.get('payment_id')
+        installment_id = request.data.get('installment_id')
+        
+        installment = PaymentInstallment.objects.filter(id=installment_id).first()
+        if installment and installment.status != 'paid':
+            installment.status = 'paid'
+            installment.payment_id = payment_id
+            installment.save()
+            
+            enrollment = installment.enrollment
+            enrollment.amount_paid += installment.amount
+            enrollment.amount_remaining -= installment.amount
+            if enrollment.amount_remaining < 0:
+                enrollment.amount_remaining = 0
+            enrollment.save()
+            
+            from .models import Transaction
+            Transaction.objects.create(
+                student=enrollment.student,
+                course=enrollment.course,
+                amount=installment.amount,
+                payment_method='stripe',
+                status='succeeded',
+                payment_id=payment_id
+            )
+            
+            # Send payment success email
+            try:
+                from django.core.mail import send_mail
+                from django.conf import settings
+                from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'info@sysfotech.uk')
+                student = enrollment.student
+                send_mail(
+                    subject=f'Payment Receipt for {installment.name}',
+                    message=f'Hello {student.name},\n\nWe have successfully received your payment of £{installment.amount} for {installment.name} ({enrollment.course.title}).\n\nThank you for your payment.\n\nSysfotech IT Services',
+                    from_email=from_email,
+                    recipient_list=[student.email],
+                    fail_silently=False,
                 )
+            except Exception as e:
+                print(f"Failed to send installment receipt: {e}")
                 
-                try:
-                    send_invoice_email(enrollment)
-                except Exception as e:
-                    print(f'Error sending invoice email: {e}')
             return Response({'status': 'success'})
         return Response({'status': 'failed'}, status=400)
 
@@ -787,12 +1166,17 @@ class LoginView(APIView):
 
     def post(self, request):
         email = request.data.get('email')
+        redirect_path = request.data.get('redirect', '')
+        
         if not email:
             return Response({'error': 'Email is required'}, status=400)
             
         student = Student.objects.filter(email=email).first()
         if student:
             magic_link_url = f"http://localhost:8080/verify?token={student.magic_link_token}"
+            if redirect_path:
+                magic_link_url += f"&redirect={redirect_path}"
+                
             from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
             
             try:
@@ -827,6 +1211,17 @@ class StudentEnrollmentsView(APIView):
         
         data = []
         for e in enrollments:
+            installments_data = []
+            if e.payment_plan == 'installment':
+                for inst in e.installments.all().order_by('installment_number'):
+                    installments_data.append({
+                        'id': str(inst.id),
+                        'name': inst.name,
+                        'amount': str(inst.amount),
+                        'due_date': inst.due_date.isoformat(),
+                        'status': inst.status
+                    })
+            
             data.append({
                 'id': e.id,
                 'course': {
@@ -834,9 +1229,13 @@ class StudentEnrollmentsView(APIView):
                     'slug': e.course.slug,
                     'image': e.course.image_url,
                 },
-                'amount': str(e.amount),
+                'amount': str(e.total_amount),
+                'amount_paid': str(e.amount_paid),
+                'amount_remaining': str(e.amount_remaining),
                 'date': e.created_at.strftime("%b %d, %Y"),
-                'status': e.status
+                'status': e.status,
+                'payment_plan': e.payment_plan,
+                'installments': installments_data
             })
             
         return Response({
@@ -904,7 +1303,17 @@ class StudentViewSet(viewsets.ModelViewSet):
 class CourseViewSet(viewsets.ModelViewSet):
     queryset = Course.objects.all().order_by('-created_at')
     serializer_class = CourseSerializer
-    permission_classes = [IsAdminUser]
+    
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve', 'by_slug']:
+            return [AllowAny()]
+        return [IsAdminUser()]
+
+    @action(detail=False, methods=['get'], url_path='slug/(?P<slug>[^/.]+)')
+    def by_slug(self, request, slug=None):
+        course = get_object_or_404(Course, slug=slug)
+        serializer = self.get_serializer(course)
+        return Response(serializer.data)
 
 class CheckoutSessionViewSet(viewsets.ModelViewSet):
     queryset = CheckoutSession.objects.all().order_by('-created_at')
@@ -925,3 +1334,106 @@ class TransactionViewSet(viewsets.ModelViewSet):
     queryset = Transaction.objects.all().order_by('-created_at')
     serializer_class = TransactionSerializer
     permission_classes = [IsAdminUser]
+
+from .models import PaymentInstallment
+from .serializers import PaymentInstallmentSerializer
+
+class InstallmentDetailView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, pk):
+        installment = PaymentInstallment.objects.filter(id=pk).first()
+        if not installment:
+            return Response({'error': 'Installment not found or invalid link'}, status=404)
+        
+        return Response({
+            'id': installment.id,
+            'name': installment.name,
+            'amount': installment.amount,
+            'status': installment.status,
+            'due_date': installment.due_date,
+            'course_title': installment.enrollment.course.title,
+            'student_name': installment.enrollment.student.name,
+            'student_email': installment.enrollment.student.email
+        })
+
+class InstallmentPayView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request, pk):
+        installment = PaymentInstallment.objects.filter(id=pk).first()
+        if not installment:
+            return Response({'error': 'Installment not found'}, status=404)
+            
+        if installment.status == 'paid':
+            return Response({'error': 'This installment has already been paid'}, status=400)
+            
+        provider = request.data.get('provider', 'stripe')
+        
+        try:
+            if provider == 'stripe':
+                stripe.api_key = settings.STRIPE_SECRET_KEY
+                student = installment.enrollment.student
+                intent = stripe.PaymentIntent.create(
+                    amount=int(installment.amount * 100),
+                    currency='gbp',
+                    description=f"Installment: {installment.name} for {installment.enrollment.course.title}",
+                    metadata={
+                        'installment_id': str(installment.id),
+                        'enrollment_id': installment.enrollment.id,
+                        'type': 'installment_payment',
+                        'student_name': student.name,
+                        'student_email': student.email,
+                        'student_phone': student.phone_number or 'N/A'
+                    }
+                )
+                return Response({'clientSecret': intent.client_secret, 'amount': installment.amount})
+            else:
+                return Response({'error': 'Provider not supported yet'}, status=400)
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
+class PaymentInstallmentViewSet(viewsets.ModelViewSet):
+    queryset = PaymentInstallment.objects.all().select_related('enrollment__student', 'enrollment__course').order_by('due_date')
+    serializer_class = PaymentInstallmentSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['status', 'enrollment__payment_plan']
+    search_fields = ['enrollment__student__name', 'enrollment__student__email', 'name', 'payment_id']
+    ordering_fields = ['due_date', 'created_at', 'amount']
+
+class SendInstallmentLinkView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            installment = PaymentInstallment.objects.select_related('enrollment__student', 'enrollment__course').get(id=pk)
+            
+            if installment.status == 'paid':
+                return Response({'error': 'This installment is already paid.'}, status=400)
+
+            student = installment.enrollment.student
+            course = installment.enrollment.course
+            link = f"http://localhost:8080/pay-installment/{installment.id}"
+            from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
+            
+            try:
+                from django.core.mail import send_mail
+                send_mail(
+                    subject=f'Action Required: Payment Due for {course.title}',
+                    message=(
+                        f'Hello {student.name},\n\n'
+                        f'This is a friendly reminder that your payment for "{installment.name}" is due on {installment.due_date.strftime("%B %d, %Y")}.\n\n'
+                        f'Amount Due: £{installment.amount}\n\n'
+                        f'Please use the secure link below to complete your payment:\n{link}\n\n'
+                        f'Thank you,\nSysfotech IT Services'
+                    ),
+                    from_email=from_email,
+                    recipient_list=[student.email],
+                    fail_silently=False,
+                )
+                return Response({'message': 'Payment link sent successfully.'})
+            except Exception as e:
+                return Response({'error': 'Failed to send email. Please try again later.'}, status=500)
+                
+        except PaymentInstallment.DoesNotExist:
+            return Response({'error': 'Installment not found'}, status=404)

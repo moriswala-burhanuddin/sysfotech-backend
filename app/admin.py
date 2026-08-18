@@ -123,13 +123,27 @@ class CourseAdmin(admin.ModelAdmin):
     list_editable = ['price', 'is_active']
     list_per_page = 25
 
+from app.models import ContactInfo, Inquiry, Student, Coupon, CheckoutSession, Course, Enrollment, Transaction, PaymentInstallment
+
+class PaymentInstallmentInline(admin.TabularInline):
+    model = PaymentInstallment
+    extra = 0
+    readonly_fields = ['id', 'created_at', 'updated_at']
+
 @admin.register(Enrollment)
 class EnrollmentAdmin(admin.ModelAdmin):
-    list_display = ['student', 'course', 'amount', 'status', 'payment_provider', 'created_at']
-    list_filter = ['status', 'payment_provider', 'created_at', 'course']
+    list_display = ['student', 'course', 'total_amount', 'amount_paid', 'amount_remaining', 'status', 'payment_provider', 'payment_plan_badge', 'created_at']
+    list_filter = ['status', 'payment_provider', 'payment_plan', 'created_at', 'course']
     search_fields = ['student__name', 'student__email', 'payment_id']
     readonly_fields = ['created_at', 'updated_at']
+    inlines = [PaymentInstallmentInline]
     list_per_page = 25
+
+    def payment_plan_badge(self, obj):
+        if obj.payment_plan == 'full':
+            return mark_safe('<span style="background-color: #dcfce7; color: #166534; padding: 3px 8px; border-radius: 12px; font-weight: bold; font-size: 11px;">Full Payment</span>')
+        return mark_safe('<span style="background-color: #fef08a; color: #854d0e; padding: 3px 8px; border-radius: 12px; font-weight: bold; font-size: 11px;">Installments</span>')
+    payment_plan_badge.short_description = "Payment Plan"
 
 @admin.register(Transaction)
 class TransactionAdmin(admin.ModelAdmin):
@@ -149,8 +163,31 @@ class CouponAdmin(admin.ModelAdmin):
 
 @admin.register(CheckoutSession)
 class CheckoutSessionAdmin(admin.ModelAdmin):
-    list_display = ['session_id', 'email', 'name', 'course', 'amount', 'payment_provider', 'status', 'created_at']
-    list_filter = ['status', 'payment_provider', 'created_at']
+    list_display = ['session_id', 'email', 'name', 'course', 'amount', 'payment_provider', 'payment_plan_badge', 'status', 'created_at']
+    list_filter = ['status', 'payment_provider', 'payment_plan', 'created_at']
     search_fields = ['email', 'name', 'session_id', 'payment_id']
     readonly_fields = ['session_id', 'magic_link_token', 'created_at', 'updated_at']
     list_per_page = 25
+
+    def payment_plan_badge(self, obj):
+        if obj.payment_plan == 'full':
+            return mark_safe('<span style="background-color: #dcfce7; color: #166534; padding: 3px 8px; border-radius: 12px; font-weight: bold; font-size: 11px;">Full Payment</span>')
+        return mark_safe('<span style="background-color: #fef08a; color: #854d0e; padding: 3px 8px; border-radius: 12px; font-weight: bold; font-size: 11px;">Installments</span>')
+    payment_plan_badge.short_description = "Payment Plan"
+
+@admin.register(PaymentInstallment)
+class PaymentInstallmentAdmin(admin.ModelAdmin):
+    list_display = ['name', 'enrollment', 'amount', 'due_date', 'status_badge', 'created_at']
+    list_filter = ['status', 'due_date', 'created_at']
+    search_fields = ['name', 'enrollment__student__name', 'enrollment__student__email', 'payment_id']
+    readonly_fields = ['created_at', 'updated_at']
+    list_per_page = 25
+    
+    def status_badge(self, obj):
+        if obj.status == 'paid':
+            return mark_safe('<span style="background-color: #dcfce7; color: #166534; padding: 3px 8px; border-radius: 12px; font-weight: bold; font-size: 11px;">Paid</span>')
+        elif obj.status == 'overdue':
+            return mark_safe('<span style="background-color: #fee2e2; color: #b91c1c; padding: 3px 8px; border-radius: 12px; font-weight: bold; font-size: 11px;">Overdue</span>')
+        return mark_safe('<span style="background-color: #fef08a; color: #854d0e; padding: 3px 8px; border-radius: 12px; font-weight: bold; font-size: 11px;">Pending</span>')
+    status_badge.short_description = "Status"
+
