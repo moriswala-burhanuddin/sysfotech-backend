@@ -164,7 +164,7 @@ def send_invoice_email(enrollment):
     pdf_bytes = generate_invoice_pdf(enrollment)
     inv_number = f'INV-{enrollment.id:05d}'
     from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
-    magic_link_url = f'http://localhost:8080/verify?token={enrollment.student.magic_link_token}'
+    magic_link_url = f'{settings.FRONTEND_URL}/verify?token={enrollment.student.magic_link_token}'
 
     email = EmailMessage(
         subject=f'Your Invoice {inv_number} - Sysfotech',
@@ -191,7 +191,7 @@ def send_installment_receipt_email(installment):
     """Send an email receipt for a successful auto-pay installment."""
     enrollment = installment.enrollment
     from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
-    magic_link_url = f'https://sysfotech.uk/verify?token={enrollment.student.magic_link_token}'
+    magic_link_url = f'{settings.FRONTEND_URL}/verify?token={enrollment.student.magic_link_token}'
 
     email = EmailMessage(
         subject=f'Payment Receipt: {installment.name} - Sysfotech',
@@ -217,7 +217,7 @@ def send_installment_failed_email(installment):
     """Send an email warning for a failed auto-pay installment."""
     enrollment = installment.enrollment
     from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
-    magic_link_url = f'https://sysfotech.uk/verify?token={enrollment.student.magic_link_token}'
+    magic_link_url = f'{settings.FRONTEND_URL}/verify?token={enrollment.student.magic_link_token}'
 
     email = EmailMessage(
         subject=f'Action Required: Payment Failed for {installment.name} - Sysfotech',
@@ -1210,7 +1210,7 @@ class LoginView(APIView):
             
         student = Student.objects.filter(email=email).first()
         if student:
-            magic_link_url = f"http://localhost:8080/verify?token={student.magic_link_token}"
+            magic_link_url = f"{settings.FRONTEND_URL}/verify?token={student.magic_link_token}"
             if redirect_path:
                 magic_link_url += f"&redirect={redirect_path}"
                 
@@ -1450,7 +1450,7 @@ class SendInstallmentLinkView(APIView):
 
             student = installment.enrollment.student
             course = installment.enrollment.course
-            link = f"http://localhost:8080/pay-installment/{installment.id}"
+            link = f"{settings.FRONTEND_URL}/pay-installment/{installment.id}"
             from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
             
             try:

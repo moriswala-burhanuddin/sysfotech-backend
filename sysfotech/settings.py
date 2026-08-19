@@ -316,6 +316,9 @@ EMAIL_USE_TLS = True
 DEFAULT_FROM_EMAIL = 'SYSFOTech <info@sysfotech.uk>'
 ADMINS = [('Admin', 'info@sysfotech.uk')]
 
+# Frontend URL - defaults to localhost for local dev, set FRONTEND_URL in .env on VPS
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:8080')
+
 # Payment Gateways Configuration
 STRIPE_PUBLIC_KEY = os.getenv('STRIPE_PUBLIC_KEY', 'pk_test_TYooMQauvdEDq54NiTphI7jx')
 STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY', 'sk_test_4eC39HqLyjWDarjtT1zdp7dc')
