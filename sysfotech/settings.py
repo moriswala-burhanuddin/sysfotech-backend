@@ -319,7 +319,33 @@ ADMINS = [('Admin', 'info@sysfotech.uk')]
 # Payment Gateways Configuration
 STRIPE_PUBLIC_KEY = os.getenv('STRIPE_PUBLIC_KEY', 'pk_test_TYooMQauvdEDq54NiTphI7jx')
 STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY', 'sk_test_4eC39HqLyjWDarjtT1zdp7dc')
+STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET', '')
 PAYPAL_CLIENT_ID = os.getenv('PAYPAL_CLIENT_ID', 'AT_test_client_id_here')
+
+# Logging configuration - ensures webhook logs appear in journalctl
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {name} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'sysfotech.webhook': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+            'propagate': True,
+        },
+    },
+}
 
 # --- LOCAL DEVELOPMENT SSL BYPASS ---
 # This fixes the "CERTIFICATE_VERIFY_FAILED" error on Windows when connecting to GoDaddy's SMTP

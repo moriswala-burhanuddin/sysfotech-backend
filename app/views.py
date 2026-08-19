@@ -191,7 +191,7 @@ def send_installment_receipt_email(installment):
     """Send an email receipt for a successful auto-pay installment."""
     enrollment = installment.enrollment
     from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
-    magic_link_url = f'http://localhost:8080/verify?token={enrollment.student.magic_link_token}'
+    magic_link_url = f'https://sysfotech.uk/verify?token={enrollment.student.magic_link_token}'
 
     email = EmailMessage(
         subject=f'Payment Receipt: {installment.name} - Sysfotech',
@@ -217,7 +217,7 @@ def send_installment_failed_email(installment):
     """Send an email warning for a failed auto-pay installment."""
     enrollment = installment.enrollment
     from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
-    magic_link_url = f'http://localhost:8080/verify?token={enrollment.student.magic_link_token}'
+    magic_link_url = f'https://sysfotech.uk/verify?token={enrollment.student.magic_link_token}'
 
     email = EmailMessage(
         subject=f'Action Required: Payment Failed for {installment.name} - Sysfotech',
@@ -898,6 +898,9 @@ def create_enrollment_and_installments(session, payment_id, provider):
     
     return enrollment
 
+import logging
+logger = logging.getLogger('sysfotech.webhook')
+
 class StripeWebhookView(APIView):
     permission_classes = []
 
@@ -913,7 +916,10 @@ class StripeWebhookView(APIView):
             else:
                 event = stripe.Event.construct_from(json.loads(payload), stripe.api_key)
         except Exception as e:
+            logger.error(f'Webhook signature verification failed: {e}')
             return HttpResponse(status=400)
+
+        logger.warning(f'[WEBHOOK] Received event: {event.type} | ID: {event.id}')
 
         # Handle the event
         if event.type == 'payment_intent.succeeded':
@@ -988,15 +994,20 @@ class StripeWebhookView(APIView):
 
         elif event.type == 'invoice.paid':
             invoice = event.data.object
+            logger.warning(f'[WEBHOOK] invoice.paid | amount_paid: {invoice.get("amount_paid", 0)} | subscription: {invoice.get("subscription")}')
+            
             # Ignore $0 invoices (e.g. from free trial start)
             if invoice.get('amount_paid', 0) == 0:
+                logger.warning('[WEBHOOK] Ignoring $0 invoice')
                 return Response({'status': 'ignored'})
 
             subscription_id = invoice.get('subscription')
             if subscription_id:
                 enrollment = Enrollment.objects.filter(stripe_subscription_id=subscription_id).first()
+                logger.warning(f'[WEBHOOK] Enrollment lookup for sub {subscription_id}: {enrollment}')
                 if enrollment:
                     installment = PaymentInstallment.objects.filter(enrollment=enrollment, status='pending').order_by('installment_number').first()
+                    logger.warning(f'[WEBHOOK] Next pending installment: {installment}')
                     if installment:
                         installment.status = 'paid'
                         installment.payment_id = invoice.get('payment_intent')
@@ -1009,21 +1020,29 @@ class StripeWebhookView(APIView):
                         if enrollment.amount_remaining < 0:
                             enrollment.amount_remaining = 0
                         enrollment.save()
+                        logger.warning(f'[WEBHOOK] Installment {installment.name} marked PAID for {enrollment.student.name}')
                         
                         try:
                             send_installment_receipt_email(installment)
+                            logger.warning(f'[WEBHOOK] Installment receipt email sent to {enrollment.student.email}')
                         except Exception as e:
-                            print(f"Error sending installment receipt: {e}")
+                            logger.error(f'Error sending installment receipt: {e}')
                         
                         if not PaymentInstallment.objects.filter(enrollment=enrollment, status='pending').exists():
                             try:
                                 stripe.Subscription.delete(subscription_id)
+                                logger.warning(f'[WEBHOOK] All installments paid. Subscription {subscription_id} cancelled.')
                             except Exception as e:
-                                print(f"Error canceling subscription: {e}")
+                                logger.error(f'Error canceling subscription: {e}')
+                else:
+                    logger.error(f'[WEBHOOK] No enrollment found for subscription_id: {subscription_id}')
+            else:
+                logger.warning('[WEBHOOK] invoice.paid event has no subscription_id')
 
         elif event.type == 'invoice.payment_failed':
             invoice = event.data.object
             subscription_id = invoice.get('subscription')
+            logger.warning(f'[WEBHOOK] invoice.payment_failed | subscription: {subscription_id}')
             if subscription_id:
                 enrollment = Enrollment.objects.filter(stripe_subscription_id=subscription_id).first()
                 if enrollment:
@@ -1031,11 +1050,13 @@ class StripeWebhookView(APIView):
                     if installment:
                         installment.status = 'failed'
                         installment.save()
+                        logger.warning(f'[WEBHOOK] Installment {installment.name} marked FAILED for {enrollment.student.name}')
                         
                         try:
                             send_installment_failed_email(installment)
+                            logger.warning(f'[WEBHOOK] Installment failed email sent to {enrollment.student.email}')
                         except Exception as e:
-                            print(f"Error sending installment failed email: {e}")
+                            logger.error(f'Error sending installment failed email: {e}')
 
         return HttpResponse(status=200)
 
