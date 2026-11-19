@@ -116,11 +116,11 @@ class StudentAdmin(admin.ModelAdmin):
 
 @admin.register(Course)
 class CourseAdmin(admin.ModelAdmin):
-    list_display = ['title', 'slug', 'price', 'is_active', 'created_at']
+    list_display = ['title', 'slug', 'price', 'one_time_price', 'installment_admission_fee', 'stripe_installment_price_id', 'is_active', 'created_at']
     list_filter = ['is_active', 'created_at']
-    search_fields = ['title', 'slug']
+    search_fields = ['title', 'slug', 'stripe_installment_price_id']
     prepopulated_fields = {'slug': ('title',)}
-    list_editable = ['price', 'is_active']
+    list_editable = ['price', 'one_time_price', 'installment_admission_fee', 'stripe_installment_price_id', 'is_active']
     list_per_page = 25
 
 from app.models import ContactInfo, Inquiry, Student, Coupon, CheckoutSession, Course, Enrollment, Transaction, PaymentInstallment

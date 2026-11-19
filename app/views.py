@@ -25,6 +25,28 @@ from reportlab.lib.colors import HexColor
 from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.lib.styles import getSampleStyleSheet
 from django.core.mail import EmailMessage
+import logging
+import time
+
+logger = logging.getLogger('sysfotech.webhook')
+
+
+def _send_with_retry(message, attempts=3, delay=2):
+    """Send an email, retrying on temporary SMTP errors (GoDaddy occasionally drops connections)."""
+    from django.core.mail import get_connection
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            conn = get_connection(fail_silently=False)
+            message.connection = conn
+            message.send(fail_silently=False)
+            return
+        except Exception as e:
+            last_error = e
+            logger.warning(f'[EMAIL] Send attempt {attempt}/{attempts} failed: {e}')
+            if attempt < attempts:
+                time.sleep(delay)
+    raise last_error
 
 
 def generate_invoice_pdf(enrollment):
@@ -51,7 +73,7 @@ def generate_invoice_pdf(enrollment):
     c.drawString(40, height - 50, 'Sysfotech IT Services')
     c.setFont('Helvetica', 9)
     c.setFillColor(HexColor('#94A3B8'))
-    c.drawString(40, height - 68, '124 City Road, London, EC1V 2NX, United Kingdom')
+    c.drawString(40, height - 68, '50th High View, Byron Way, London UB5 6BL, United Kingdom')
     c.drawString(40, height - 80, 'billing@sysfotech.uk  |  +44 74421 93577')
 
     # ── INVOICE label ──
@@ -179,13 +201,23 @@ def send_invoice_email(enrollment):
         to=[enrollment.student.email],
     )
     email.attach(f'{inv_number}.pdf', pdf_bytes, 'application/pdf')
-    email.send(fail_silently=False)
-    
-    # Send separate admin notification
+
+    # Student invoice and admin notification are sent independently, so a failure
+    # on one never stops the other, and every failure is logged with a traceback.
+    student_error = None
     try:
-        send_admin_payment_notification(enrollment)
+        _send_with_retry(email)
     except Exception as e:
-        print(f"Error sending admin payment notification: {e}")
+        student_error = e
+        logger.exception(f'[EMAIL] Invoice email to {enrollment.student.email} failed for enrollment {enrollment.id}')
+
+    try:
+        _send_with_retry(build_admin_payment_email(enrollment))
+    except Exception:
+        logger.exception(f'[EMAIL] Admin notification failed for enrollment {enrollment.id}')
+
+    if student_error:
+        raise student_error
 
 def send_installment_receipt_email(installment):
     """Send an email receipt for a successful auto-pay installment."""
@@ -238,26 +270,33 @@ def send_installment_failed_email(installment):
     except Exception as e:
         print(f"Error sending admin installment failed notification: {e}")
 
-def send_admin_payment_notification(enrollment):
-    """Send a dedicated email to the admin with full student and payment details."""
+def build_admin_payment_email(enrollment):
+    """Build the email telling the admin who enrolled, which course and what they paid."""
     from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@sysfotech.uk')
     admin_email = 'info@sysfotech.uk'
-    
+
     subject = f'New Payment Received: {enrollment.course.title}'
     body = (
         f"A new payment has been processed!\n\n"
         f"Student Details:\n"
         f"Name: {enrollment.student.name}\n"
         f"Email: {enrollment.student.email}\n"
-        f"Phone: {getattr(enrollment.student, 'phone_number', 'N/A')}\n\n"
+        f"Phone: {enrollment.student.phone_number or 'N/A'}\n\n"
         f"Enrollment Details:\n"
         f"Course: {enrollment.course.title}\n"
-        f"Payment Plan: {enrollment.payment_plan}\n"
+        f"Payment Plan: {enrollment.get_payment_plan_display()}\n"
+        f"Payment Provider: {enrollment.payment_provider.title()}\n"
+        f"Payment ID: {enrollment.payment_id}\n"
+        f"Total Course Fee: £{enrollment.total_amount}\n"
         f"Amount Paid: £{enrollment.amount_paid}\n"
         f"Amount Remaining: £{enrollment.amount_remaining}\n"
     )
-    email = EmailMessage(subject=subject, body=body, from_email=from_email, to=[admin_email])
-    email.send(fail_silently=False)
+    return EmailMessage(subject=subject, body=body, from_email=from_email, to=[admin_email])
+
+
+def send_admin_payment_notification(enrollment):
+    """Send a dedicated email to the admin with full student and payment details."""
+    _send_with_retry(build_admin_payment_email(enrollment))
 
 def send_admin_installment_notification(installment, status):
     """Send a dedicated email to the admin about an installment status."""
@@ -615,7 +654,8 @@ class CreateStripePaymentIntentView(APIView):
                         'title': course_title, 
                         'price': 429.00,
                         'one_time_price': 351.00,
-                        'installment_admission_fee': 195.00
+                        'installment_admission_fee': 195.00,
+                        'stripe_installment_price_id': os.getenv('STRIPE_INSTALLMENT_PRICE_ID', 'price_1U5NQHRyNbHdMn2lBVWQabGV'),
                     }
                 )
             else:
@@ -662,30 +702,56 @@ class CreateStripePaymentIntentView(APIView):
                     )
 
             # Create PaymentIntent
+            plan_label = 'Installment plan (admission fee)' if payment_plan == 'installment' else 'Full payment'
+
+            # Always ensure a Stripe Customer exists and is linked so payments & subscriptions appear under the customer
+            customer_id = student.stripe_customer_id if student and student.stripe_customer_id else None
+            if not customer_id:
+                customer = stripe.Customer.create(
+                    email=email,
+                    name=name,
+                    phone=phone or None,
+                    metadata={
+                        'course_slug': course.slug,
+                        'course_title': course.title,
+                        'payment_plan': payment_plan,
+                    },
+                )
+                customer_id = customer.id
+                if student:
+                    student.stripe_customer_id = customer_id
+                    student.save(update_fields=['stripe_customer_id'])
+            else:
+                try:
+                    stripe.Customer.modify(
+                        customer_id,
+                        name=name,
+                        phone=phone or None,
+                        metadata={
+                            'course_slug': course.slug,
+                            'course_title': course.title,
+                            'payment_plan': payment_plan,
+                        }
+                    )
+                except Exception:
+                    pass
+
             intent_kwargs = {
                 'amount': amount,
                 'currency': 'gbp',
                 'payment_method_types': ['card'],
+                'customer': customer_id,
+                'description': f'{course.title} - {plan_label}',
                 'metadata': {
                     'student_name': name,
                     'student_email': email,
                     'student_phone': phone or 'N/A',
-                    'course_title': course_title,
+                    'course_title': course.title,
+                    'course_slug': course.slug,
                     'payment_plan': payment_plan,
                 }
             }
             if payment_plan == 'installment':
-                customer_id = None
-                if student and student.stripe_customer_id:
-                    customer_id = student.stripe_customer_id
-                else:
-                    customer = stripe.Customer.create(email=email, name=name)
-                    customer_id = customer.id
-                    if student:
-                        student.stripe_customer_id = customer.id
-                        student.save()
-                
-                intent_kwargs['customer'] = customer_id
                 intent_kwargs['setup_future_usage'] = 'off_session'
             
             intent = stripe.PaymentIntent.create(**intent_kwargs)
@@ -737,7 +803,8 @@ class CreatePayPalOrderView(APIView):
                         'title': course_title, 
                         'price': 429.00,
                         'one_time_price': 351.00,
-                        'installment_admission_fee': 195.00
+                        'installment_admission_fee': 195.00,
+                        'stripe_installment_price_id': os.getenv('STRIPE_INSTALLMENT_PRICE_ID', 'price_1U5NQHRyNbHdMn2lBVWQabGV'),
                     }
                 )
             else:
@@ -846,6 +913,33 @@ def create_enrollment_and_installments(session, payment_id, provider):
         payment_id=payment_id,
         status='paid'
     )
+
+    # Record the payment in the Transactions table (shown in the admin portal)
+    try:
+        Transaction.objects.get_or_create(
+            payment_id=payment_id,
+            defaults={
+                'student': student,
+                'course': course,
+                'amount': session.amount,
+                'payment_method': provider if provider in ('stripe', 'paypal') else 'stripe',
+                'status': 'completed',
+            },
+        )
+    except Exception:
+        logger.exception(f'[ENROLL] Could not record transaction for {payment_id}')
+
+    # Link the Stripe Customer to the student so later payments and subscriptions match up
+    if provider == 'stripe' and not student.stripe_customer_id:
+        try:
+            stripe.api_key = settings.STRIPE_SECRET_KEY
+            intent_obj = stripe.PaymentIntent.retrieve(payment_id)
+            customer_id = getattr(intent_obj, 'customer', None)
+            if customer_id:
+                student.stripe_customer_id = customer_id
+                student.save()
+        except Exception:
+            logger.exception(f'[ENROLL] Could not read Stripe customer for {payment_id}')
     
     # Create installments
     today = timezone.now().date()
@@ -893,8 +987,9 @@ def create_enrollment_and_installments(session, payment_id, provider):
     
     try:
         send_invoice_email(enrollment)
-    except Exception as e:
-        print(f'Error sending invoice email: {e}')
+    except Exception:
+        # Already logged with a full traceback inside send_invoice_email
+        logger.error(f'[ENROLL] Invoice email failed for enrollment {enrollment.id}')
     
     return enrollment
 
@@ -936,7 +1031,8 @@ class StripeWebhookView(APIView):
                 
                 # Create Stripe Subscription for installment plans
                 import os
-                price_id = enrollment.course.stripe_installment_price_id or os.getenv('STRIPE_INSTALLMENT_PRICE_ID')
+                raw_price = enrollment.course.stripe_installment_price_id or os.getenv('STRIPE_INSTALLMENT_PRICE_ID')
+                price_id = str(raw_price).strip() if raw_price else None
                 if enrollment.payment_plan == 'installment' and not enrollment.stripe_subscription_id and price_id:
                     student = enrollment.student
                     
@@ -944,11 +1040,11 @@ class StripeWebhookView(APIView):
                     customer_id = getattr(payment_intent, 'customer', None)
                     if not student.stripe_customer_id and customer_id:
                         student.stripe_customer_id = customer_id
-                        student.save()
+                        student.save(update_fields=['stripe_customer_id'])
 
                     if student.stripe_customer_id:
                         try:
-                            # Calculate exact date next month
+                            # Calculate exact date next month for billing_cycle_anchor
                             now = timezone.now()
                             month = now.month + 1
                             year = now.year
@@ -959,6 +1055,7 @@ class StripeWebhookView(APIView):
                             max_day = calendar.monthrange(year, month)[1]
                             day = min(now.day, max_day)
                             next_month = now.replace(year=year, month=month, day=day, hour=12, minute=0, second=0)
+                            anchor = int(next_month.timestamp())
                             
                             # Retrieve the payment method attached to the intent
                             intent_obj = stripe.PaymentIntent.retrieve(payment_id)
@@ -972,13 +1069,16 @@ class StripeWebhookView(APIView):
                                     pass
                                 stripe.Customer.modify(student.stripe_customer_id, invoice_settings={'default_payment_method': pm_id})
                             
+                            # Create subscription with billing_cycle_anchor and proration_behavior='none'
+                            # This immediately creates an ACTIVE subscription with autopay scheduled for next month
                             subscription = stripe.Subscription.create(
                                 customer=student.stripe_customer_id,
                                 items=[{'price': price_id}],
                                 default_payment_method=pm_id,
-                                trial_end=int(next_month.timestamp()),
+                                billing_cycle_anchor=anchor,
+                                proration_behavior='none',
                                 metadata={
-                                    'enrollment_id': enrollment.id,
+                                    'enrollment_id': str(enrollment.id),
                                     'student_name': student.name,
                                     'student_email': student.email,
                                     'course_title': enrollment.course.title,
@@ -986,9 +1086,10 @@ class StripeWebhookView(APIView):
                                 }
                             )
                             enrollment.stripe_subscription_id = subscription.id
-                            enrollment.save()
+                            enrollment.save(update_fields=['stripe_subscription_id'])
+                            logger.warning(f"[STRIPE] Created active installment subscription {subscription.id} for enrollment {enrollment.id}")
                         except Exception as e:
-                            print(f"Error creating Stripe subscription: {e}")
+                            logger.exception(f"[STRIPE] Error creating Stripe subscription in webhook: {e}")
                 
                 
 
@@ -1021,6 +1122,21 @@ class StripeWebhookView(APIView):
                             enrollment.amount_remaining = 0
                         enrollment.save()
                         logger.warning(f'[WEBHOOK] Installment {installment.name} marked PAID for {enrollment.student.name}')
+
+                        try:
+                            if installment.payment_id:
+                                Transaction.objects.get_or_create(
+                                    payment_id=installment.payment_id,
+                                    defaults={
+                                        'student': enrollment.student,
+                                        'course': enrollment.course,
+                                        'amount': installment.amount,
+                                        'payment_method': 'stripe',
+                                        'status': 'completed',
+                                    },
+                                )
+                        except Exception:
+                            logger.exception('[WEBHOOK] Could not record installment transaction')
                         
                         try:
                             send_installment_receipt_email(installment)
@@ -1095,7 +1211,8 @@ class TestCaptureView(APIView):
                 
                 if session.payment_provider == 'stripe' and enrollment.payment_plan == 'installment' and not enrollment.stripe_subscription_id:
                     import os
-                    price_id = enrollment.course.stripe_installment_price_id or os.getenv('STRIPE_INSTALLMENT_PRICE_ID')
+                    raw_price = enrollment.course.stripe_installment_price_id or os.getenv('STRIPE_INSTALLMENT_PRICE_ID')
+                    price_id = str(raw_price).strip() if raw_price else None
                     if price_id:
                         student = enrollment.student
                         try:
@@ -1103,7 +1220,7 @@ class TestCaptureView(APIView):
                             customer_id = getattr(intent_obj, 'customer', None)
                             if not student.stripe_customer_id and customer_id:
                                 student.stripe_customer_id = customer_id
-                                student.save()
+                                student.save(update_fields=['stripe_customer_id'])
 
                             if student.stripe_customer_id:
                                 from django.utils import timezone
@@ -1117,6 +1234,7 @@ class TestCaptureView(APIView):
                                 max_day = calendar.monthrange(year, month)[1]
                                 day = min(now.day, max_day)
                                 next_month = now.replace(year=year, month=month, day=day, hour=12, minute=0, second=0)
+                                anchor = int(next_month.timestamp())
                                 
                                 pm_id = intent_obj.payment_method
                                 if pm_id:
@@ -1127,13 +1245,16 @@ class TestCaptureView(APIView):
                                         pass
                                     stripe.Customer.modify(student.stripe_customer_id, invoice_settings={'default_payment_method': pm_id})
                                 
+                                # Create subscription with billing_cycle_anchor and proration_behavior='none'
+                                # This immediately creates an ACTIVE subscription with autopay scheduled for next month
                                 subscription = stripe.Subscription.create(
                                     customer=student.stripe_customer_id,
                                     items=[{'price': price_id}],
                                     default_payment_method=pm_id,
-                                    trial_end=int(next_month.timestamp()),
+                                    billing_cycle_anchor=anchor,
+                                    proration_behavior='none',
                                     metadata={
-                                        'enrollment_id': enrollment.id,
+                                        'enrollment_id': str(enrollment.id),
                                         'student_name': student.name,
                                         'student_email': student.email,
                                         'course_title': enrollment.course.title,
@@ -1141,9 +1262,10 @@ class TestCaptureView(APIView):
                                     }
                                 )
                                 enrollment.stripe_subscription_id = subscription.id
-                                enrollment.save()
+                                enrollment.save(update_fields=['stripe_subscription_id'])
+                                logger.warning(f"[STRIPE] Created active installment subscription {subscription.id} for enrollment {enrollment.id} in TestCaptureView")
                         except Exception as e:
-                            print(f"Error creating subscription in TestCaptureView: {e}")
+                            logger.exception(f"[STRIPE] Error creating subscription in TestCaptureView: {e}")
                 
                 
             return Response({'status': 'success'})
@@ -1348,7 +1470,21 @@ class CourseViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='slug/(?P<slug>[^/.]+)')
     def by_slug(self, request, slug=None):
-        course = get_object_or_404(Course, slug=slug)
+        if slug == 'sysfotech-6-month-ai-program':
+            course, _ = Course.objects.get_or_create(
+                slug='sysfotech-6-month-ai-program',
+                defaults={
+                    'title': 'Sysfotech UK 6-Month AI & Automation Program',
+                    'description': 'Complete 6-Month Intensive Curriculum Roadmap: AI-Powered Business Automation, n8n, RPA, Next-Gen Data Analytics (Power BI), and 3-Month Live UK Internship.',
+                    'price': 429.00,
+                    'one_time_price': 351.00,
+                    'installment_admission_fee': 195.00,
+                    'stripe_installment_price_id': os.getenv('STRIPE_INSTALLMENT_PRICE_ID', 'price_1U5NQHRyNbHdMn2lBVWQabGV'),
+                    'is_active': True,
+                }
+            )
+        else:
+            course = get_object_or_404(Course, slug=slug)
         serializer = self.get_serializer(course)
         return Response(serializer.data)
 
