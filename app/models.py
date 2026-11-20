@@ -281,3 +281,38 @@ class CheckoutSession(models.Model):
 
     def __str__(self):
         return f"{self.email} - {self.payment_provider} - {self.status}"
+
+
+class CourseRegistration(models.Model):
+    """Model to store course registration and trial class questionnaire submissions"""
+    EMPLOYMENT_STATUS_CHOICES = [
+        ('Student', 'Student'),
+        ('Employed', 'Employed'),
+        ('Self-employed', 'Self-employed'),
+        ('Unemployed', 'Unemployed'),
+    ]
+
+    full_name = models.CharField(max_length=200, help_text="Full Name")
+    email = models.EmailField(help_text="Email address")
+    whatsapp = models.CharField(max_length=50, help_text="WhatsApp number with country code")
+    country = models.CharField(max_length=100, blank=True, null=True, help_text="Country of residence")
+    city = models.CharField(max_length=100, blank=True, null=True, help_text="City")
+    qualification = models.CharField(max_length=200, blank=True, null=True, help_text="Academic / professional qualification")
+    age = models.CharField(max_length=20, blank=True, null=True, help_text="Applicant age")
+    employment_status = models.CharField(max_length=50, blank=True, null=True, choices=EMPLOYMENT_STATUS_CHOICES, help_text="Are you working or studying?")
+    why_want_course = models.TextField(blank=True, null=True, help_text="Why you want this course")
+    selected_courses = models.TextField(blank=True, null=True, help_text="Selected course(s)")
+    want_demo = models.CharField(max_length=20, blank=True, null=True, help_text="Wants free 1-day demo")
+    demo_date = models.CharField(max_length=50, blank=True, null=True, help_text="Preferred demo date")
+    consent = models.BooleanField(default=True, help_text="Marketing & communication consent")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "Course Registration"
+        verbose_name_plural = "Course Registrations"
+
+    def __str__(self):
+        return f"{self.full_name} ({self.email}) - {self.created_at.strftime('%Y-%m-%d')}"
+

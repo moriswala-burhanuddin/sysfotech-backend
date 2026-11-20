@@ -6,17 +6,25 @@ from rest_framework.permissions import IsAuthenticatedOrReadOnly, IsAuthenticate
 from django_filters.rest_framework   import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 from .models import ContactInfo, Inquiry
-from .serializers import ContactInfoSerializer, InquirySerializer, ContactInfoPublicSerializer, CourseRegistrationSerializer
+from .serializers import (
+    ContactInfoSerializer,
+    InquirySerializer,
+    ContactInfoPublicSerializer,
+    CourseRegistrationSerializer,
+    CourseRegistrationModelSerializer,
+)
 from django.views.generic import TemplateView
 from django.http import HttpResponse
 from rest_framework.views import APIView
 from django.core.mail import EmailMultiAlternatives
 from django.utils.html import strip_tags
+from django.utils import timezone
 import os
 import io
 from django.conf import settings
 import stripe
-from .models import Course, Student, Transaction, Enrollment, Coupon, CheckoutSession
+from .models import Course, Student, Transaction, Enrollment, Coupon, CheckoutSession, CourseRegistration
+
 
 # ─── PDF Invoice Generator ──────────────────────────────────────────
 from reportlab.lib.pagesizes import A4
@@ -434,8 +442,23 @@ class InquiryViewSet(viewsets.ModelViewSet):
             return Response(serializer.data)
         return Response({'error': 'Invalid status'}, status=status.HTTP_400_BAD_REQUEST)
 
+class CourseRegistrationViewSet(viewsets.ModelViewSet):
+    """Admin CRUD viewset for course registrations"""
+    queryset = CourseRegistration.objects.all().order_by('-created_at')
+    serializer_class = CourseRegistrationModelSerializer
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['employment_status', 'country']
+    search_fields = ['full_name', 'email', 'whatsapp', 'city', 'country', 'qualification', 'why_want_course']
+    ordering_fields = ['created_at']
+
+    def get_permissions(self):
+        if self.action == 'create':
+            return []
+        return [IsAuthenticated()]
+
+
 class CourseRegistrationView(APIView):
-    permission_classes = [] # Public access
+    permission_classes = []  # Public access
 
     def post(self, request):
         serializer = CourseRegistrationSerializer(data=request.data)
@@ -446,64 +469,76 @@ class CourseRegistrationView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
         
         data = serializer.validated_data
-        
-        # 1. Send Email to Admissions (info@sysfotech.uk)
-        admissions_email = "info@sysfotech.uk"
+        phone_val = data.get('whatsapp') or data.get('mobile') or ''
+        courses_str = ', '.join(data.get('selectedCourses') or [])
+
+        # 1. Save to Database Model
+        try:
+            registration = CourseRegistration.objects.create(
+                full_name=data['fullName'],
+                email=data['email'],
+                whatsapp=phone_val,
+                country=data.get('country') or '',
+                city=data.get('city') or '',
+                qualification=data.get('qualification') or '',
+                age=data.get('age') or '',
+                employment_status=data.get('employmentStatus') or '',
+                why_want_course=data.get('whyWantCourse') or '',
+                selected_courses=courses_str,
+                want_demo=data.get('wantDemo') or '',
+                demo_date=data.get('demoDate') or '',
+                consent=data.get('consent', True),
+            )
+        except Exception as e:
+            print(f"Error saving course registration: {str(e)}")
+            return Response({'error': 'Failed to save registration', 'details': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # 2. Send Notification Email to Owner
+        admissions_email = getattr(settings, 'DEFAULT_ADMIN_EMAIL', 'info@sysfotech.uk')
         subject_admissions = f"New Course Registration - {data['fullName']}"
-        
-        # Format registration details for admissions
-        details_txt = f"""
-New Course Registration Received
+        if courses_str:
+            subject_admissions += f" ({courses_str})"
 
-STUDENT DETAILS:
-Name: {data['fullName']}
-Email: {data['email']}
-Phone (WhatsApp): {data['mobile']}
-Date of Birth: {data.get('dateOfBirth') or 'N/A'}
-Current Address: {data.get('address') or 'N/A'}
-City: {data.get('city') or 'N/A'}
-Postcode: {data.get('postcode') or 'N/A'}
+        details_txt = f"""New Course Registration & Questionnaire Received!
 
-EMPLOYMENT DETAILS:
-Status: {', '.join(data.get('currentStatus') or []) or 'N/A'}
-Company Name: {data.get('companyName') or 'N/A'}
-Current Job Role: {data.get('jobRole') or 'N/A'}
+STUDENT INFORMATION:
+- Full Name: {data['fullName']}
+- Email: {data['email']}
+- WhatsApp (with Country Code): {phone_val or 'N/A'}
+- Country of Residence: {data.get('country') or 'N/A'}
+- City: {data.get('city') or 'N/A'}
 
-COURSE PREFERENCES:
-Selected Course(s): {', '.join(data['selectedCourses'])}
-Learning Mode: {data.get('learningMode') or 'N/A'}
-Course Duration: {data.get('courseDuration') or 'N/A'}
-Experience Level: {data.get('experienceLevel') or 'N/A'}
+ACADEMIC & BACKGROUND:
+- Qualification: {data.get('qualification') or 'N/A'}
+- Age: {data.get('age') or 'N/A'}
+- Working or Studying: {data.get('employmentStatus') or 'N/A'}
 
-ABOUT STUDENT:
-Reasons for enrolling: {', '.join(data.get('reasons') or []) or 'N/A'}
-Hear about us: {', '.join(data.get('hearAboutUs') or []) or 'N/A'}
+COURSE & MOTIVATION:
+- Selected Course(s): {courses_str or 'N/A'}
+- Why you want this course:
+{data.get('whyWantCourse') or 'N/A'}
 
 FREE DEMO DETAILS:
-Registered for Demo: {data.get('wantDemo') or 'N/A'}
-Demo Batch Option: {data.get('demoBatch') or 'N/A'}
-Preferred Time: {data.get('demoTime') or 'N/A'}
+- Registered for Demo: {data.get('wantDemo') or 'N/A'}
+- Preferred Demo Date: {data.get('demoDate') or 'N/A'}
+- Marketing Consent: {'Yes' if data.get('consent', True) else 'No'}
 
-Consent Approved: {'Yes' if data['consent'] else 'No'}
+Submitted on: {timezone.now().strftime('%d %B %Y, %I:%M %p UTC')}
+Registration ID: #{registration.id}
 """
+        from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'info@sysfotech.uk')
         try:
-            # Send plain text to admissions
-            msg_admissions = EmailMultiAlternatives(
+            msg_admissions = EmailMessage(
                 subject=subject_admissions,
                 body=details_txt,
-                from_email="info@sysfotech.uk",
+                from_email=from_email,
                 to=[admissions_email]
             )
-            msg_admissions.send()
+            _send_with_retry(msg_admissions)
         except Exception as e:
-            # Log error
             print(f"Error sending admissions email: {str(e)}")
-            return Response({
-                'error': 'Failed to send registration inquiry',
-                'details': str(e)
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # 2. Send professional HTML thank you email to student
+        # 3. Send professional HTML thank you email to student
         student_email = data['email']
         subject_student = "Thank you for registering with Sysfotech IT Services"
         
@@ -597,13 +632,14 @@ Consent Approved: {'Yes' if data['consent'] else 'No'}
                 to=[student_email]
             )
             msg_student.attach_alternative(html_content, "text/html")
-            msg_student.send()
+            _send_with_retry(msg_student)
         except Exception as e:
             # Note: We still return 201 because the admissions email sent, but we log the student email error
             print(f"Error sending student confirmation email: {str(e)}")
 
         return Response({
-            'message': 'Course registration submitted successfully! Admissions will contact you soon.'
+            'message': 'Course registration submitted successfully! Admissions will contact you soon.',
+            'id': registration.id
         }, status=status.HTTP_201_CREATED)
 
 class CouponValidateView(APIView):

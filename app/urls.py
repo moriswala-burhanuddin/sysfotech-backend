@@ -12,6 +12,7 @@ router.register(r'checkout-sessions', views.CheckoutSessionViewSet)
 router.register(r'coupons', views.CouponViewSet)
 router.register(r'enrollments', views.EnrollmentViewSet)
 router.register(r'transactions', views.TransactionViewSet)
+router.register(r'course-registrations-list', views.CourseRegistrationViewSet)
 
 router.register(r'installments', views.PaymentInstallmentViewSet, basename='installment')
 

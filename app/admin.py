@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.utils.html import format_html
 from django.urls import reverse
 from django.utils.safestring import mark_safe
-from app.models import ContactInfo, Inquiry, Student, Coupon, CheckoutSession, Course, Enrollment, Transaction 
+from app.models import ContactInfo, Inquiry, Student, Coupon, CheckoutSession, Course, Enrollment, Transaction, CourseRegistration 
 
 # Register your models here.
 
@@ -123,7 +123,7 @@ class CourseAdmin(admin.ModelAdmin):
     list_editable = ['price', 'one_time_price', 'installment_admission_fee', 'stripe_installment_price_id', 'is_active']
     list_per_page = 25
 
-from app.models import ContactInfo, Inquiry, Student, Coupon, CheckoutSession, Course, Enrollment, Transaction, PaymentInstallment
+from app.models import ContactInfo, Inquiry, Student, Coupon, CheckoutSession, Course, Enrollment, Transaction, CourseRegistration, PaymentInstallment
 
 class PaymentInstallmentInline(admin.TabularInline):
     model = PaymentInstallment
@@ -190,4 +190,34 @@ class PaymentInstallmentAdmin(admin.ModelAdmin):
             return mark_safe('<span style="background-color: #fee2e2; color: #b91c1c; padding: 3px 8px; border-radius: 12px; font-weight: bold; font-size: 11px;">Overdue</span>')
         return mark_safe('<span style="background-color: #fef08a; color: #854d0e; padding: 3px 8px; border-radius: 12px; font-weight: bold; font-size: 11px;">Pending</span>')
     status_badge.short_description = "Status"
+
+
+@admin.register(CourseRegistration)
+class CourseRegistrationAdmin(admin.ModelAdmin):
+    list_display = ['id', 'full_name', 'email', 'whatsapp', 'country', 'city', 'qualification', 'age', 'employment_status', 'created_at']
+    list_filter = ['employment_status', 'country', 'created_at']
+    search_fields = ['full_name', 'email', 'whatsapp', 'city', 'country', 'qualification', 'why_want_course']
+    readonly_fields = ['created_at', 'updated_at']
+    date_hierarchy = 'created_at'
+    list_per_page = 25
+    save_on_top = True
+    fieldsets = (
+        ('Applicant Details', {
+            'fields': ('full_name', 'email', 'whatsapp', 'country', 'city')
+        }),
+        ('Academic & Professional Background', {
+            'fields': ('qualification', 'age', 'employment_status')
+        }),
+        ('Course & Motivation', {
+            'fields': ('selected_courses', 'why_want_course')
+        }),
+        ('Demo Session & Consent', {
+            'fields': ('want_demo', 'demo_date', 'consent')
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
 

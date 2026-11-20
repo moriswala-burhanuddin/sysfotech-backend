@@ -1,6 +1,12 @@
 from rest_framework import serializers
-from .models import ContactInfo, Inquiry, Student, Course, CheckoutSession, Coupon, Enrollment, Transaction, PaymentInstallment
+from .models import ContactInfo, Inquiry, Student, Course, CheckoutSession, Coupon, Enrollment, Transaction, PaymentInstallment, CourseRegistration
 import re
+
+class CourseRegistrationModelSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CourseRegistration
+        fields = '__all__'
+
 
 class ContactInfoSerializer(serializers.ModelSerializer):
     class Meta:
@@ -51,25 +57,34 @@ class ContactInfoPublicSerializer(serializers.ModelSerializer):
 
 class CourseRegistrationSerializer(serializers.Serializer):
     fullName = serializers.CharField(max_length=255)
-    dateOfBirth = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
     email = serializers.EmailField()
-    mobile = serializers.CharField(max_length=50)
-    address = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
+    whatsapp = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
+    mobile = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
+    country = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
     city = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
+    qualification = serializers.CharField(max_length=200, required=False, allow_blank=True, allow_null=True)
+    age = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
+    employmentStatus = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
+    whyWantCourse = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    selectedCourses = serializers.ListField(child=serializers.CharField(), required=False, default=[])
+    wantDemo = serializers.CharField(max_length=20, required=False, allow_blank=True, allow_null=True)
+    demoDate = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
+    consent = serializers.BooleanField(required=False, default=True)
+
+    # Legacy / optional fields preserved
+    dateOfBirth = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
+    address = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
     postcode = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
     currentStatus = serializers.ListField(child=serializers.CharField(), required=False, default=[])
     companyName = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
     jobRole = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
-    selectedCourses = serializers.ListField(child=serializers.CharField(), min_length=1)
     learningMode = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
     courseDuration = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
     experienceLevel = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
     reasons = serializers.ListField(child=serializers.CharField(), required=False, default=[])
     hearAboutUs = serializers.ListField(child=serializers.CharField(), required=False, default=[])
-    wantDemo = serializers.CharField(max_length=10, required=False, allow_blank=True, allow_null=True)
     demoBatch = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
     demoTime = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
-    consent = serializers.BooleanField()
 
 class StudentSerializer(serializers.ModelSerializer):
     # Show which courses this student is enrolled in
