@@ -704,35 +704,35 @@ class CreateStripePaymentIntentView(APIView):
             # Create PaymentIntent
             plan_label = 'Installment plan (admission fee)' if payment_plan == 'installment' else 'Full payment'
 
-            # Always ensure a Stripe Customer exists and is linked so payments & subscriptions appear under the customer
+            # A Stripe Customer is needed so the card can be saved for instalments.
+            # New customers are flagged 'pending_checkout' and are deleted again if the
+            # payment fails, so only people who actually paid stay in Stripe Customers.
             customer_id = student.stripe_customer_id if student and student.stripe_customer_id else None
+            new_customer = False
             if not customer_id:
-                customer = stripe.Customer.create(
-                    email=email,
-                    name=name,
-                    phone=phone or None,
-                    metadata={
-                        'course_slug': course.slug,
-                        'course_title': course.title,
-                        'payment_plan': payment_plan,
-                    },
-                )
-                customer_id = customer.id
+                existing_customers = stripe.Customer.list(email=email, limit=1).data
+                if existing_customers:
+                    customer_id = existing_customers[0].id
+                    new_customer = _meta_value(existing_customers[0], 'pending_checkout') == 'true'
+                else:
+                    customer_id = stripe.Customer.create(
+                        email=email,
+                        name=name,
+                        phone=phone or None,
+                        metadata={
+                            'pending_checkout': 'true',
+                            'course_slug': course.slug,
+                            'course_title': course.title,
+                            'payment_plan': payment_plan,
+                        },
+                    ).id
+                    new_customer = True
                 if student:
                     student.stripe_customer_id = customer_id
                     student.save(update_fields=['stripe_customer_id'])
             else:
                 try:
-                    stripe.Customer.modify(
-                        customer_id,
-                        name=name,
-                        phone=phone or None,
-                        metadata={
-                            'course_slug': course.slug,
-                            'course_title': course.title,
-                            'payment_plan': payment_plan,
-                        }
-                    )
+                    stripe.Customer.modify(customer_id, name=name, phone=phone or None)
                 except Exception:
                     pass
 
@@ -754,7 +754,13 @@ class CreateStripePaymentIntentView(APIView):
             if payment_plan == 'installment':
                 intent_kwargs['setup_future_usage'] = 'off_session'
             
-            intent = stripe.PaymentIntent.create(**intent_kwargs)
+            try:
+                intent = stripe.PaymentIntent.create(**intent_kwargs)
+            except Exception:
+                # Do not leave an empty customer behind if the payment could not even start
+                if new_customer:
+                    _delete_pending_customer(customer_id)
+                raise
             
             # Create CheckoutSession
             session = CheckoutSession.objects.create(
@@ -878,7 +884,7 @@ from datetime import timedelta
 from django.utils import timezone
 from .models import PaymentInstallment
 
-def create_enrollment_and_installments(session, payment_id, provider):
+def create_enrollment_and_installments(session, payment_id, provider, send_email=True):
     student = Student.objects.filter(email=session.email).first()
     if not student:
         student = Student.objects.create(
@@ -985,12 +991,149 @@ def create_enrollment_and_installments(session, payment_id, provider):
             payment_id=payment_id
         )
     
+    if send_email:
+        try:
+            send_invoice_email(enrollment)
+        except Exception:
+            # Already logged with a full traceback inside send_invoice_email
+            logger.error(f'[ENROLL] Invoice email failed for enrollment {enrollment.id}')
+    
+    return enrollment
+
+
+def _meta_value(stripe_obj, key):
+    """Read one metadata value from a Stripe object (None if missing)."""
     try:
+        return stripe_obj.metadata[key]
+    except Exception:
+        return None
+
+
+def _delete_pending_customer(customer_id):
+    """Delete a Stripe customer that was only created for a checkout that never got paid."""
+    try:
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+        customer = stripe.Customer.retrieve(customer_id)
+        if getattr(customer, 'deleted', False):
+            return
+        if _meta_value(customer, 'pending_checkout') != 'true':
+            return  # a real, previously paid customer - never delete
+        if stripe.Subscription.list(customer=customer_id, limit=1).data:
+            return
+        if any(p.status == 'succeeded' for p in stripe.PaymentIntent.list(customer=customer_id, limit=20).data):
+            return
+        stripe.Customer.delete(customer_id)
+        Student.objects.filter(stripe_customer_id=customer_id).update(stripe_customer_id=None)
+        logger.warning(f'[STRIPE] Removed unpaid pending customer {customer_id}')
+    except Exception:
+        logger.exception(f'[STRIPE] Could not clean up pending customer {customer_id}')
+
+
+def create_installment_subscription(enrollment, payment_id):
+    """
+    Create the monthly auto-pay Stripe Subscription for an instalment enrolment.
+    The card used for the admission fee is saved on the customer and the first monthly
+    charge is scheduled for the same day next month. Returns the subscription id or None.
+    """
+    import calendar
+
+    if enrollment.payment_plan != 'installment' or enrollment.stripe_subscription_id:
+        return enrollment.stripe_subscription_id
+
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    raw_price = enrollment.course.stripe_installment_price_id or os.getenv('STRIPE_INSTALLMENT_PRICE_ID')
+    price_id = str(raw_price).strip() if raw_price else None
+    if not price_id:
+        logger.error(f'[STRIPE] No instalment price ID set for course {enrollment.course.slug} - subscription NOT created')
+        return None
+
+    student = enrollment.student
+    try:
+        intent = stripe.PaymentIntent.retrieve(payment_id)
+        customer_id = getattr(intent, 'customer', None) or student.stripe_customer_id
+        if not customer_id:
+            logger.error(f'[STRIPE] No Stripe customer on {payment_id} - subscription NOT created')
+            return None
+        if student.stripe_customer_id != customer_id:
+            student.stripe_customer_id = customer_id
+            student.save(update_fields=['stripe_customer_id'])
+
+        pm_id = intent.payment_method
+        if pm_id:
+            try:
+                stripe.PaymentMethod.attach(pm_id, customer=customer_id)
+            except stripe.error.InvalidRequestError:
+                pass  # already attached because the payment used setup_future_usage
+            stripe.Customer.modify(customer_id, invoice_settings={'default_payment_method': pm_id})
+
+        # First auto-pay = about one month after today's payment. Stripe rejects any anchor that is
+        # later than its own "next natural billing date" (exactly one month from now, to the second),
+        # so stay one hour inside that limit to be safe against clock differences.
+        now = timezone.now()
+        month, year = (1, now.year + 1) if now.month == 12 else (now.month + 1, now.year)
+        day = min(now.day, calendar.monthrange(year, month)[1])
+        anchor = int(now.replace(year=year, month=month, day=day, microsecond=0).timestamp()) - 3600
+
+        subscription = stripe.Subscription.create(
+            customer=customer_id,
+            items=[{'price': price_id}],
+            default_payment_method=pm_id,
+            billing_cycle_anchor=anchor,
+            proration_behavior='none',
+            metadata={
+                'enrollment_id': str(enrollment.id),
+                'student_name': student.name,
+                'student_email': student.email,
+                'course_title': enrollment.course.title,
+                'payment_plan': enrollment.payment_plan,
+            },
+        )
+        enrollment.stripe_subscription_id = subscription.id
+        enrollment.save(update_fields=['stripe_subscription_id'])
+        logger.warning(f'[STRIPE] Created subscription {subscription.id} ({price_id}) for enrollment {enrollment.id}')
+        return subscription.id
+    except Exception:
+        logger.exception(f'[STRIPE] Subscription creation FAILED for enrollment {enrollment.id} (price {price_id})')
+        return None
+
+
+def _send_invoice_email_background(enrollment_id):
+    from django.db import connection
+    try:
+        enrollment = Enrollment.objects.select_related('student', 'course').get(id=enrollment_id)
         send_invoice_email(enrollment)
     except Exception:
-        # Already logged with a full traceback inside send_invoice_email
-        logger.error(f'[ENROLL] Invoice email failed for enrollment {enrollment.id}')
-    
+        logger.exception(f'[ENROLL] Background invoice email failed for enrollment {enrollment_id}')
+    finally:
+        connection.close()
+
+
+def finalise_stripe_payment(session, payment_id):
+    """
+    Everything that must happen once a Stripe payment has succeeded. Order matters:
+    enrolment -> subscription -> customer tidy-up -> emails (in the background, so a slow
+    SMTP server can never delay the response or stop the subscription being created).
+    """
+    import threading
+
+    enrollment = create_enrollment_and_installments(session, payment_id, 'stripe', send_email=False)
+    create_installment_subscription(enrollment, payment_id)
+
+    try:
+        customer_id = enrollment.student.stripe_customer_id
+        if customer_id:
+            stripe.api_key = settings.STRIPE_SECRET_KEY
+            # An empty value removes the 'pending_checkout' flag - this is now a real, paid customer
+            stripe.Customer.modify(customer_id, metadata={
+                'pending_checkout': '',
+                'course_slug': enrollment.course.slug,
+                'course_title': enrollment.course.title,
+                'payment_plan': enrollment.payment_plan,
+            })
+    except Exception:
+        logger.exception(f'[STRIPE] Could not update customer metadata for enrollment {enrollment.id}')
+
+    threading.Thread(target=_send_invoice_email_background, args=(enrollment.id,), daemon=True).start()
     return enrollment
 
 import logging
@@ -1027,71 +1170,7 @@ class StripeWebhookView(APIView):
                 session.status = 'completed'
                 session.save()
                 
-                enrollment = create_enrollment_and_installments(session, payment_id, 'stripe')
-                
-                # Create Stripe Subscription for installment plans
-                import os
-                raw_price = enrollment.course.stripe_installment_price_id or os.getenv('STRIPE_INSTALLMENT_PRICE_ID')
-                price_id = str(raw_price).strip() if raw_price else None
-                if enrollment.payment_plan == 'installment' and not enrollment.stripe_subscription_id and price_id:
-                    student = enrollment.student
-                    
-                    # Ensure student has stripe_customer_id from the payment intent
-                    customer_id = getattr(payment_intent, 'customer', None)
-                    if not student.stripe_customer_id and customer_id:
-                        student.stripe_customer_id = customer_id
-                        student.save(update_fields=['stripe_customer_id'])
-
-                    if student.stripe_customer_id:
-                        try:
-                            # Calculate exact date next month for billing_cycle_anchor
-                            now = timezone.now()
-                            month = now.month + 1
-                            year = now.year
-                            if month > 12:
-                                month = 1
-                                year += 1
-                            import calendar
-                            max_day = calendar.monthrange(year, month)[1]
-                            day = min(now.day, max_day)
-                            next_month = now.replace(year=year, month=month, day=day, hour=12, minute=0, second=0)
-                            anchor = int(next_month.timestamp())
-                            
-                            # Retrieve the payment method attached to the intent
-                            intent_obj = stripe.PaymentIntent.retrieve(payment_id)
-                            pm_id = intent_obj.payment_method
-                            
-                            if pm_id:
-                                try:
-                                    stripe.PaymentMethod.attach(pm_id, customer=student.stripe_customer_id)
-                                except stripe.error.InvalidRequestError:
-                                    # Payment method may already be attached to the customer, which is fine
-                                    pass
-                                stripe.Customer.modify(student.stripe_customer_id, invoice_settings={'default_payment_method': pm_id})
-                            
-                            # Create subscription with billing_cycle_anchor and proration_behavior='none'
-                            # This immediately creates an ACTIVE subscription with autopay scheduled for next month
-                            subscription = stripe.Subscription.create(
-                                customer=student.stripe_customer_id,
-                                items=[{'price': price_id}],
-                                default_payment_method=pm_id,
-                                billing_cycle_anchor=anchor,
-                                proration_behavior='none',
-                                metadata={
-                                    'enrollment_id': str(enrollment.id),
-                                    'student_name': student.name,
-                                    'student_email': student.email,
-                                    'course_title': enrollment.course.title,
-                                    'payment_plan': enrollment.payment_plan,
-                                }
-                            )
-                            enrollment.stripe_subscription_id = subscription.id
-                            enrollment.save(update_fields=['stripe_subscription_id'])
-                            logger.warning(f"[STRIPE] Created active installment subscription {subscription.id} for enrollment {enrollment.id}")
-                        except Exception as e:
-                            logger.exception(f"[STRIPE] Error creating Stripe subscription in webhook: {e}")
-                
-                
+                finalise_stripe_payment(session, payment_id)
 
         elif event.type == 'invoice.paid':
             invoice = event.data.object
@@ -1207,69 +1286,38 @@ class TestCaptureView(APIView):
                 session.status = 'completed'
                 session.save()
                 
-                enrollment = create_enrollment_and_installments(session, payment_id, session.payment_provider)
-                
-                if session.payment_provider == 'stripe' and enrollment.payment_plan == 'installment' and not enrollment.stripe_subscription_id:
-                    import os
-                    raw_price = enrollment.course.stripe_installment_price_id or os.getenv('STRIPE_INSTALLMENT_PRICE_ID')
-                    price_id = str(raw_price).strip() if raw_price else None
-                    if price_id:
-                        student = enrollment.student
-                        try:
-                            intent_obj = stripe.PaymentIntent.retrieve(payment_id)
-                            customer_id = getattr(intent_obj, 'customer', None)
-                            if not student.stripe_customer_id and customer_id:
-                                student.stripe_customer_id = customer_id
-                                student.save(update_fields=['stripe_customer_id'])
+                if session.payment_provider == 'stripe':
+                    finalise_stripe_payment(session, payment_id)
+                else:
+                    create_enrollment_and_installments(session, payment_id, session.payment_provider)
 
-                            if student.stripe_customer_id:
-                                from django.utils import timezone
-                                now = timezone.now()
-                                month = now.month + 1
-                                year = now.year
-                                if month > 12:
-                                    month = 1
-                                    year += 1
-                                import calendar
-                                max_day = calendar.monthrange(year, month)[1]
-                                day = min(now.day, max_day)
-                                next_month = now.replace(year=year, month=month, day=day, hour=12, minute=0, second=0)
-                                anchor = int(next_month.timestamp())
-                                
-                                pm_id = intent_obj.payment_method
-                                if pm_id:
-                                    try:
-                                        stripe.PaymentMethod.attach(pm_id, customer=student.stripe_customer_id)
-                                    except stripe.error.InvalidRequestError:
-                                        # Payment method may already be attached to the customer, which is fine
-                                        pass
-                                    stripe.Customer.modify(student.stripe_customer_id, invoice_settings={'default_payment_method': pm_id})
-                                
-                                # Create subscription with billing_cycle_anchor and proration_behavior='none'
-                                # This immediately creates an ACTIVE subscription with autopay scheduled for next month
-                                subscription = stripe.Subscription.create(
-                                    customer=student.stripe_customer_id,
-                                    items=[{'price': price_id}],
-                                    default_payment_method=pm_id,
-                                    billing_cycle_anchor=anchor,
-                                    proration_behavior='none',
-                                    metadata={
-                                        'enrollment_id': str(enrollment.id),
-                                        'student_name': student.name,
-                                        'student_email': student.email,
-                                        'course_title': enrollment.course.title,
-                                        'payment_plan': enrollment.payment_plan,
-                                    }
-                                )
-                                enrollment.stripe_subscription_id = subscription.id
-                                enrollment.save(update_fields=['stripe_subscription_id'])
-                                logger.warning(f"[STRIPE] Created active installment subscription {subscription.id} for enrollment {enrollment.id} in TestCaptureView")
-                        except Exception as e:
-                            logger.exception(f"[STRIPE] Error creating subscription in TestCaptureView: {e}")
-                
-                
             return Response({'status': 'success'})
         return Response({'status': 'failed'}, status=400)
+
+class AbortStripeCheckoutView(APIView):
+    """Called by the checkout page when a card payment fails, so no unpaid customer is left in Stripe."""
+    permission_classes = []
+
+    def post(self, request):
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+        payment_id = request.data.get('payment_id')
+        session = CheckoutSession.objects.filter(payment_id=payment_id, payment_provider='stripe').first()
+        if not session or session.status == 'completed':
+            return Response({'status': 'ignored'})
+        try:
+            intent = stripe.PaymentIntent.retrieve(payment_id)
+            if intent.status == 'succeeded':
+                return Response({'status': 'ignored'})
+            if intent.status in ('requires_payment_method', 'requires_confirmation', 'requires_action'):
+                stripe.PaymentIntent.cancel(payment_id)
+            session.status = 'failed'
+            session.save(update_fields=['status'])
+            if getattr(intent, 'customer', None):
+                _delete_pending_customer(intent.customer)
+        except Exception:
+            logger.exception(f'[STRIPE] Could not abort checkout {payment_id}')
+        return Response({'status': 'aborted'})
+
 
 class TestInstallmentCaptureView(APIView):
     permission_classes = []

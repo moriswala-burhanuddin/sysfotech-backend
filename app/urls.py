@@ -28,6 +28,7 @@ urlpatterns = [
     path('webhooks/stripe/', views.StripeWebhookView.as_view(), name='stripe-webhook'),
     path('paypal/capture/', views.PayPalCaptureView.as_view(), name='paypal-capture'),
     path('test/capture/', views.TestCaptureView.as_view(), name='test-capture'),
+    path('stripe/abort/', views.AbortStripeCheckoutView.as_view(), name='stripe-abort'),
     path('login/', views.LoginView.as_view(), name='login'),
     path('student/enrollments/', views.StudentEnrollmentsView.as_view(), name='student-enrollments'),
     path('student/invoice/<int:enrollment_id>/', views.InvoiceDownloadView.as_view(), name='invoice-download'),
