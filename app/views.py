@@ -406,11 +406,32 @@ class InquiryViewSet(viewsets.ModelViewSet):
         return [IsAuthenticated()]  # Authentication required for other operations
 
     def create(self, request, *args, **kwargs):
-        """Create a new inquiry"""
+        """Create a new inquiry and notify admissions/owner"""
         try:
             serializer = self.get_serializer(data=request.data)
             if serializer.is_valid():
-                serializer.save()
+                inquiry = serializer.save()
+
+                # Send email notification to owner/admissions
+                try:
+                    admin_email = getattr(settings, 'DEFAULT_ADMIN_EMAIL', 'info@sysfotech.uk')
+                    subject = f"New Service Inquiry: {inquiry.name} - {inquiry.service_needed or 'General'}"
+                    body = (
+                        f"A new client inquiry has been submitted on Sysfotech!\n\n"
+                        f"Client Details:\n"
+                        f"Name: {inquiry.name}\n"
+                        f"Email: {inquiry.email}\n"
+                        f"Phone: {inquiry.phone_number or 'N/A'}\n"
+                        f"Service Needed: {inquiry.service_needed or 'N/A'}\n"
+                        f"Budget: {inquiry.budget_range or 'N/A'}\n"
+                        f"Timeline: {inquiry.timeline or 'N/A'}\n\n"
+                        f"Project Description:\n{inquiry.project_description}\n"
+                    )
+                    from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'info@sysfotech.uk')
+                    _send_with_retry(EmailMessage(subject=subject, body=body, from_email=from_email, to=[admin_email]))
+                except Exception as mail_err:
+                    print(f"Error sending inquiry notification email: {str(mail_err)}")
+
                 return Response({
                     'message': 'Inquiry submitted successfully! We will contact you soon.',
                     'data': serializer.data
