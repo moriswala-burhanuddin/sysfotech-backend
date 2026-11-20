@@ -730,7 +730,8 @@ class CreateStripePaymentIntentView(APIView):
                 if student:
                     student.stripe_customer_id = customer_id
                     student.save(update_fields=['stripe_customer_id'])
-            else:
+
+            if customer_id:
                 try:
                     stripe.Customer.modify(customer_id, name=name, phone=phone or None)
                 except Exception:
